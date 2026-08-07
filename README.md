@@ -1,36 +1,31 @@
-# BAC2Sober
+# BAC2Sober 🍻⌚
 
-A Pebble watchapp/watchface written in C using the Pebble SDK.
+BAC2Sober is a native, open-source C application for PebbleOS smartwatches that tracks blood alcohol content (BAC) and provides a real-time metabolic countdown to sobriety. 
 
-## Building & running
+## Features
+- **Dynamic Widmark Calculations:** Real-time BAC tracking and a live "Sober By" clock that updates every minute.
+- **Vector Container Graphics:** Beautiful, memory-efficient `GPath` vector silhouettes of common drink containers (Cans, Bottles, Wine Glasses, Growlers, and Pints) with dynamic liquid filling.
+- **Customizable User Profiles:** Supports precise weight entry in both Kilograms (kg) and Pounds (lbs).
+- **Theme Engine:** Built-in Light and Dark modes with vibrant UI highlights on color displays.
+- **Historical Log:** Review, edit (Time, Volume, ABV), or delete previous drinks on the fly. The log resets after 12 hours of 0.00 BAC. 
 
-```sh
-pebble build                          # build for all targetPlatforms
-pebble install --emulator emery       # install on the emery emulator
-pebble install --phone <ip>           # install to a paired phone
-```
+## Compatibility
+Built against the modern [Core Devices PebbleOS SDK](https://github.com/coredevices/PebbleOS). Fully compatible with:
+- Pebble Time 2 (PT2)
+- Pebble Time / Time Steel
+- Pebble 2 HR / SE
+- Legacy monochrome hardware (Graceful fallback to B&W themes)
 
-## Target platforms
+## Building from Source
 
-`targetPlatforms` in `package.json` controls which watches you build for. The
-modern Pebble hardware is **emery** (Pebble Time 2), **gabbro** (Pebble Round
-2), and **flint** (Pebble 2 Duo); the original Pebble platforms (aplite,
-basalt, chalk, diorite) are included by default for backwards compatibility.
+This project utilizes the standard Pebble `waf` build system.
 
-## Project layout
+1. Ensure you have the Pebble SDK installed and configured.
+2. Clone this repository:
+   ```bash
+   git clone [https://github.com/username/BAC2Sober.git](https://github.com/username/BAC2Sober.git)
+   cd BAC2Sober
 
-```
-src/c/           C source for the watchapp
-src/pkjs/        PebbleKit JS (phone-side) source, if any
-worker_src/c/    Background worker source, if any
-resources/       Images, fonts, and other bundled resources
-package.json     Project metadata (UUID, platforms, resources, message keys)
-wscript          Build rules — usually no need to edit
-```
+Liability Disclaimer: The developers of BAC2Sober assume no responsibility for the misuse of this application or the accuracy of its blood alcohol estimates. This application is for entertainment and informational purposes only. It is not a medical device, nor a legal breathalyzer. Its calculations must never be relied upon to determine your ability or fitness to operate a motor vehicle, heavy machinery, or make safety-critical decisions. Always exercise personal responsibility and never drink and drive.
 
-By default this project is configured as a watchapp. To make it a watchface,
-set `pebble.watchapp.watchface` to `true` in `package.json`.
-
-## Documentation
-
-Full SDK docs, tutorials, and API reference: <https://developer.repebble.com>
+AI Disclosure: The source code, geometric vector generation, and user interface for this application were developed in collaboration with an AI language model. The underlying mathematical implementations and firmware integrations were validated against the official PebbleOS open-source SDK.
