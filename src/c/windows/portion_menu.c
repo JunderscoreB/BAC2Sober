@@ -3,24 +3,34 @@
 #include "abv_window.h"
 #include "../core/storage.h"
 
+// Predefined percentage steps incorporating 10% intervals, quarters, and thirds.
+static const float s_volume_steps_pct[] = {
+    10.0f, 20.0f, 25.0f, 30.0f, 33.3333f, 40.0f, 50.0f,
+    60.0f, 66.6667f, 70.0f, 75.0f, 80.0f, 90.0f, 100.0f
+};
+#define NUM_VOLUME_STEPS (sizeof(s_volume_steps_pct) / sizeof(s_volume_steps_pct[0]))
+
 static Window *s_window;
 static Layer *s_canvas_layer;
 static TextLayer *s_portion_text_layer;
 
 static float s_max_volume_ml;
 static float s_current_volume_ml;
+static int s_current_step_idx;
 static float s_default_abv;
 static DrinkShape s_shape;
 
 static void update_text_layer(void) {
     static char s_buffer[32];
     AppSettings *settings = storage_get_settings();
-    int percent = (int)((s_current_volume_ml / s_max_volume_ml) * 100.0f);
+
+    // Safely round to the nearest whole percentage for display (e.g. 66.66 -> 67%)
+    int percent = (int)(s_volume_steps_pct[s_current_step_idx] + 0.5f);
 
     if (settings->use_metric_volume) {
-        snprintf(s_buffer, sizeof(s_buffer), "%d%% - %dml", percent, (int)s_current_volume_ml);
+        snprintf(s_buffer, sizeof(s_buffer), "%d%% - %dml", percent, (int)(s_current_volume_ml + 0.5f));
     } else {
-        snprintf(s_buffer, sizeof(s_buffer), "%d%% - %doz", percent, (int)(s_current_volume_ml / 29.5735f));
+        snprintf(s_buffer, sizeof(s_buffer), "%d%% - %doz", percent, (int)((s_current_volume_ml / 29.5735f) + 0.5f));
     }
     text_layer_set_text(s_portion_text_layer, s_buffer);
 }
@@ -33,7 +43,6 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
     float fill_ratio = s_current_volume_ml / s_max_volume_ml;
 
     bool is_wine = (s_shape == SHAPE_WINE_GLASS || s_shape == SHAPE_WINE_BOTTLE);
-    // Updated to a brighter, richer red
     GColor liquid_color = PBL_IF_COLOR_ELSE(is_wine ? GColorDarkCandyAppleRed : GColorChromeYellow, theme_text());
     GColor glass_color = theme_text();
 
@@ -133,17 +142,18 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
 }
 
 static void up_click_handler(ClickRecognizerRef recognizer, void *context) {
-    if (s_current_volume_ml < s_max_volume_ml) {
-        s_current_volume_ml += (s_max_volume_ml / 10.0f);
-        if (s_current_volume_ml > s_max_volume_ml) s_current_volume_ml = s_max_volume_ml;
+    if (s_current_step_idx < (int)NUM_VOLUME_STEPS - 1) {
+        s_current_step_idx++;
+        s_current_volume_ml = s_max_volume_ml * (s_volume_steps_pct[s_current_step_idx] / 100.0f);
         update_text_layer();
         layer_mark_dirty(s_canvas_layer);
     }
 }
 
 static void down_click_handler(ClickRecognizerRef recognizer, void *context) {
-    if (s_current_volume_ml > (s_max_volume_ml / 10.0f)) {
-        s_current_volume_ml -= (s_max_volume_ml / 10.0f);
+    if (s_current_step_idx > 0) {
+        s_current_step_idx--;
+        s_current_volume_ml = s_max_volume_ml * (s_volume_steps_pct[s_current_step_idx] / 100.0f);
         update_text_layer();
         layer_mark_dirty(s_canvas_layer);
     }
@@ -188,7 +198,8 @@ static void window_unload(Window *window) {
 
 void portion_menu_push(float max_volume_ml, float default_abv, DrinkShape shape) {
     s_max_volume_ml = max_volume_ml;
-    s_current_volume_ml = max_volume_ml;
+    s_current_step_idx = NUM_VOLUME_STEPS - 1; // Default to 100%
+    s_current_volume_ml = s_max_volume_ml;
     s_default_abv = default_abv;
     s_shape = shape;
 

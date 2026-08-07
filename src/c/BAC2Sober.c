@@ -6,6 +6,14 @@
 
 #define DROPOFF_DELAY_SECONDS (12 * 3600)
 
+/**
+ *
+ * AI Disclaimer
+ *
+ * The source code, geometric vector generation, and user interface for this application were developed in collaboration with an AI language model. The underlying mathematical implementations and firmware integrations were validated against the official PebbleOS open-source SDK.
+ ***/
+
+
 typedef enum { EDIT_MODE_TIME, EDIT_MODE_ABV, EDIT_MODE_VOL } EditMode;
 
 static Window *s_main_window;
