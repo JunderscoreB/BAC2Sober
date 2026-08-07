@@ -1,0 +1,41 @@
+{
+  "name": "BAC2Sober",
+  "author": "J_B",
+  "version": "0.9.0",
+  "keywords": [
+    "pebble-app"
+  ],
+  "private": true,
+  "dependencies": {},
+  "pebble": {
+    "displayName": "BAC2Sober",
+    "uuid": "6f04f0f2-9a70-4207-81e4-bf1d8974830f",
+    "sdkVersion": "3",
+    "enableMultiJS": true,
+    "targetPlatforms": [
+      "aplite",
+      "basalt",
+      "chalk",
+      "diorite",
+      "emery",
+      "flint",
+      "gabbro"
+    ],
+    "watchapp": {
+      "watchface": false
+    },
+    "messageKeys": [
+      "dummy"
+    ],
+    "resources": {
+      "media": [
+        {
+          "type": "png",
+          "name": "IMAGE_MENU_ICON",
+          "file": "icon.png",
+          "menuIcon": true
+        }
+      ]
+    }
+  }
+}
