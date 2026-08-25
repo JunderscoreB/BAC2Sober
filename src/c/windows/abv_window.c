@@ -12,24 +12,23 @@ static float s_current_volume_ml = 0.0f;
 
 static void update_abv_text(void) {
     static char s_buffer[16];
-
-    // Safely round floating point to avoid precision drift (e.g., 5.09999 -> 5.1)
+    
     int abv_tenths = (int)(s_current_abv * 10.0f + 0.5f);
     int abv_whole = abv_tenths / 10;
     int abv_decimal = abv_tenths % 10;
-
+    
     snprintf(s_buffer, sizeof(s_buffer), "%d.%d%%", abv_whole, abv_decimal);
     text_layer_set_text(s_abv_layer, s_buffer);
 }
 
 static void up_click_handler(ClickRecognizerRef recognizer, void *context) {
-    s_current_abv += 0.1f; // Changed from 0.5f to 0.1f
+    s_current_abv += 0.1f; 
     if (s_current_abv > 20.0f) s_current_abv = 20.0f;
     update_abv_text();
 }
 
 static void down_click_handler(ClickRecognizerRef recognizer, void *context) {
-    if (s_current_abv > 0.1f) s_current_abv -= 0.1f; // Changed from 0.5f to 0.1f
+    if (s_current_abv > 0.1f) s_current_abv -= 0.1f; 
     else s_current_abv = 0.0f;
     update_abv_text();
 }
@@ -44,11 +43,55 @@ static void click_config_provider(void *context) {
     window_single_click_subscribe(BUTTON_ID_SELECT, select_click_handler);
 }
 
+#ifdef PBL_TOUCH
+static int16_t s_touch_start_y = 0;
+static int16_t s_touch_last_y = 0;
+static bool s_is_drag = false;
+
+static void touch_handler(const TouchEvent *event, void *context) {
+    if (event->type == TouchEvent_Touchdown) {
+        s_touch_start_y = event->y;
+        s_touch_last_y = event->y;
+        s_is_drag = false;
+    } else if (event->type == TouchEvent_PositionUpdate) {
+        if (!s_is_drag && abs(event->y - s_touch_start_y) > 10) s_is_drag = true;
+        
+        if (s_is_drag) {
+            int16_t delta = event->y - s_touch_last_y;
+            if (delta < -15) {
+                up_click_handler(NULL, NULL);
+                s_touch_last_y = event->y;
+            } else if (delta > 15) {
+                down_click_handler(NULL, NULL);
+                s_touch_last_y = event->y;
+            }
+        }
+    } else if (event->type == TouchEvent_Liftoff) {
+        if (!s_is_drag) select_click_handler(NULL, NULL); 
+    }
+}
+#endif
+
+static void window_appear(Window *window) {
+    #ifdef PBL_TOUCH
+    if (touch_service_is_enabled()) {
+        touch_service_subscribe(touch_handler, NULL);
+    }
+    #endif
+}
+
+static void window_disappear(Window *window) {
+    #ifdef PBL_TOUCH
+    if (touch_service_is_enabled()) {
+        touch_service_unsubscribe();
+    }
+    #endif
+}
+
 static void window_load(Window *window) {
     Layer *window_layer = window_get_root_layer(window);
     GRect bounds = layer_get_bounds(window_layer);
 
-    // Apply the global Dark/Light mode theme
     window_set_background_color(window, theme_bg());
 
     s_title_layer = text_layer_create(GRect(0, bounds.size.h / 2 - 40, bounds.size.w, 30));
@@ -65,7 +108,7 @@ static void window_load(Window *window) {
     text_layer_set_background_color(s_abv_layer, GColorClear);
     text_layer_set_text_color(s_abv_layer, theme_text());
     layer_add_child(window_layer, text_layer_get_layer(s_abv_layer));
-
+    
     update_abv_text();
 }
 
@@ -85,8 +128,16 @@ void abv_window_push(float volume_ml, float default_abv) {
         window_set_click_config_provider(s_window, click_config_provider);
         window_set_window_handlers(s_window, (WindowHandlers) {
             .load = window_load,
+            .appear = window_appear,
+            .disappear = window_disappear,
             .unload = window_unload,
         });
     }
     window_stack_push(s_window, true);
+}
+
+void abv_window_destroy_safe(void) {
+    if (s_window && window_stack_contains_window(s_window)) {
+        window_stack_remove(s_window, false);
+    }
 }

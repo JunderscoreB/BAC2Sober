@@ -1,2 +1,4 @@
 #pragma once
-void time_offset_menu_push(float volume_ml, float abv_decimal);
+#include <pebble.h>
+
+void time_offset_menu_push(float volume_ml, float abv);

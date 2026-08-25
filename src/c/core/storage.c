@@ -13,7 +13,7 @@ static AppSettings s_settings = {
     .gender_constant = 0.68f,
     .use_metric_volume = true,
     .use_metric_weight = true,
-    .dark_mode = false
+    .theme_mode = THEME_MODE_LIGHT
 };
 
 void storage_load_settings(void) {
@@ -28,13 +28,26 @@ void storage_save_settings(void) {
 
 AppSettings* storage_get_settings(void) { return &s_settings; }
 
-GColor theme_bg(void) { return s_settings.dark_mode ? GColorBlack : GColorWhite; }
-GColor theme_text(void) { return s_settings.dark_mode ? GColorWhite : GColorBlack; }
+// --- Dynamic Theme Resolution ---
+static bool is_dark_theme_active(void) {
+    if (s_settings.theme_mode == THEME_MODE_DARK) {
+        return true;
+    }
+    if (s_settings.theme_mode == THEME_MODE_AUTO) {
+        time_t now = time(NULL);
+        struct tm *t = localtime(&now);
+        // Active from 6:00 PM (18) to 5:59 AM (before 6)
+        return (t->tm_hour >= 18 || t->tm_hour < 6);
+    }
+    return false; // THEME_MODE_LIGHT
+}
 
-// Updated to a sleek blue/purple highlight
+GColor theme_bg(void) { return is_dark_theme_active() ? GColorBlack : GColorWhite; }
+GColor theme_text(void) { return is_dark_theme_active() ? GColorWhite : GColorBlack; }
 GColor theme_highlight_bg(void) { return PBL_IF_COLOR_ELSE(GColorElectricUltramarine, theme_text()); }
 GColor theme_highlight_text(void) { return PBL_IF_COLOR_ELSE(GColorWhite, theme_bg()); }
 
+// --- Drink Storage ---
 void storage_load_drinks(Drink* drinks, int* num_drinks) {
     if (persist_exists(NUM_DRINKS_PERSIST_KEY)) {
         *num_drinks = persist_read_int(NUM_DRINKS_PERSIST_KEY);

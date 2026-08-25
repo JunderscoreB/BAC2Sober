@@ -3,12 +3,18 @@
 
 #define MAX_DRINKS 20
 
+// Ensure exactly 1 byte to maintain binary compatibility with the old "bool dark_mode" save files
+typedef uint8_t ThemeMode;
+#define THEME_MODE_LIGHT 0
+#define THEME_MODE_DARK  1
+#define THEME_MODE_AUTO  2
+
 typedef struct {
     float weight;
     float gender_constant;
     bool use_metric_volume;
     bool use_metric_weight;
-    bool dark_mode;
+    ThemeMode theme_mode;
 } AppSettings;
 
 void storage_load_drinks(Drink* drinks, int* num_drinks);
