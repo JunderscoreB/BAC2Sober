@@ -1,6 +1,7 @@
 #include <pebble.h>
 #include "container_menu.h"
 #include "portion_menu.h"
+#include "abv_window.h"
 #include "custom_volume_window.h"
 #include "../core/bac_math.h"
 #include "../core/storage.h"
@@ -16,9 +17,10 @@ typedef struct {
 static Window *s_window;
 static MenuLayer *s_menu_layer;
 
-#define NUM_LIQUOR_OPTIONS 1
+#define NUM_LIQUOR_OPTIONS 2
 static const DrinkContainer s_liquor_options[] = {
-    {"Shot", 30.0f, 40.0f, SHAPE_SHOT}
+    {"Shot", 30.0f, 40.0f, SHAPE_SHOT},
+    {"Double Shot", 60.0f, 40.0f, SHAPE_SHOT}
 };
 
 #define NUM_BEER_OPTIONS 6
@@ -93,7 +95,14 @@ static void select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *
     else if (cell_index->section == 1) selected = &s_beer_options[cell_index->row];
     else selected = &s_wine_options[cell_index->row];
 
-    portion_menu_push(selected->volume_ml, selected->default_abv, selected->shape);
+    AppSettings *settings = storage_get_settings();
+    if (settings->enable_portions) {
+        // Pass original volume, current volume, default abv, shape, and -1 (not an edit)
+        portion_menu_push(selected->volume_ml, selected->volume_ml, selected->default_abv, selected->shape, -1);
+    } else {
+        // Skip portion wizard, pass volume for both fields, abv, and shape
+        abv_window_push(selected->volume_ml, selected->volume_ml, selected->default_abv, selected->shape);
+    }
 }
 
 static MenuLayerCallbacks s_menu_cbs = {

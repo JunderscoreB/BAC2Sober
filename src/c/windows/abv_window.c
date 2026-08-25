@@ -10,6 +10,9 @@ static TextLayer *s_abv_layer;
 static float s_current_abv = 5.0f;
 static float s_current_volume_ml = 0.0f;
 
+static float s_original_volume_ml = 0.0f;
+static DrinkShape s_shape;
+
 static void update_abv_text(void) {
     static char s_buffer[16];
     
@@ -34,7 +37,7 @@ static void down_click_handler(ClickRecognizerRef recognizer, void *context) {
 }
 
 static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
-    time_offset_menu_push(s_current_volume_ml, s_current_abv / 100.0f);
+    time_offset_menu_push(s_current_volume_ml, s_original_volume_ml, s_current_abv / 100.0f, s_shape);
 }
 
 static void click_config_provider(void *context) {
@@ -119,9 +122,11 @@ static void window_unload(Window *window) {
     s_window = NULL;
 }
 
-void abv_window_push(float volume_ml, float default_abv) {
+void abv_window_push(float volume_ml, float original_volume_ml, float default_abv, DrinkShape shape) {
     s_current_volume_ml = volume_ml;
+    s_original_volume_ml = original_volume_ml;
     s_current_abv = default_abv;
+    s_shape = shape;
 
     if(!s_window) {
         s_window = window_create();

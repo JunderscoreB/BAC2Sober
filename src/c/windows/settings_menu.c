@@ -8,7 +8,7 @@ static Window *s_window;
 static MenuLayer *s_menu_layer;
 
 static uint16_t get_num_rows_callback(MenuLayer *menu_layer, uint16_t section_index, void *data) {
-    return 6; 
+    return 7; // Expanded for the Split Drinks toggle
 }
 
 static int16_t get_cell_height_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *data) {
@@ -33,11 +33,14 @@ static void draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuIndex 
         snprintf(subtitle, sizeof(subtitle), settings->use_metric_volume ? "Metric (ml)" : "Imperial (oz)");
         menu_cell_basic_draw(ctx, cell_layer, "Volume Unit", subtitle, NULL);
     } else if (cell_index->row == 4) {
+        snprintf(subtitle, sizeof(subtitle), settings->enable_portions ? "Enabled" : "Disabled");
+        menu_cell_basic_draw(ctx, cell_layer, "Split Drinks", subtitle, NULL);
+    } else if (cell_index->row == 5) {
         if (settings->theme_mode == THEME_MODE_LIGHT) snprintf(subtitle, sizeof(subtitle), "Light");
         else if (settings->theme_mode == THEME_MODE_DARK) snprintf(subtitle, sizeof(subtitle), "Dark");
         else snprintf(subtitle, sizeof(subtitle), "Auto (6pm - 6am)");
         menu_cell_basic_draw(ctx, cell_layer, "Theme", subtitle, NULL);
-    } else if (cell_index->row == 5) {
+    } else if (cell_index->row == 6) {
         menu_cell_basic_draw(ctx, cell_layer, "Clear All Drinks", "Resets BAC to 0.00", NULL);
     }
 }
@@ -66,6 +69,11 @@ static void select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *
         storage_save_settings();
         menu_layer_reload_data(menu_layer);
     } else if (cell_index->row == 4) {
+        // Toggle the new portion setting
+        settings->enable_portions = !settings->enable_portions;
+        storage_save_settings();
+        menu_layer_reload_data(menu_layer);
+    } else if (cell_index->row == 5) {
         if (settings->theme_mode == THEME_MODE_LIGHT) settings->theme_mode = THEME_MODE_DARK;
         else if (settings->theme_mode == THEME_MODE_DARK) settings->theme_mode = THEME_MODE_AUTO;
         else settings->theme_mode = THEME_MODE_LIGHT;
@@ -75,7 +83,7 @@ static void select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *
         menu_layer_set_normal_colors(menu_layer, theme_bg(), theme_text());
         menu_layer_set_highlight_colors(menu_layer, theme_highlight_bg(), theme_highlight_text());
         menu_layer_reload_data(menu_layer);
-    } else if (cell_index->row == 5) {
+    } else if (cell_index->row == 6) {
         storage_clear_drinks();
         window_stack_pop(true);
     }

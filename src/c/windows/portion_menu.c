@@ -2,6 +2,7 @@
 #include "portion_menu.h"
 #include "abv_window.h"
 #include "../core/storage.h"
+#include "../core/touch_menu.h"
 
 static const float s_volume_steps_pct[] = {
     10.0f, 20.0f, 25.0f, 30.0f, 33.3333f, 40.0f, 50.0f, 
@@ -18,6 +19,7 @@ static float s_current_volume_ml;
 static int s_current_step_idx;
 static float s_default_abv;
 static DrinkShape s_shape;
+static int s_edit_drink_idx = -1;
 
 static void update_text_layer(void) {
     static char s_buffer[32];
@@ -153,7 +155,14 @@ static void down_click_handler(ClickRecognizerRef recognizer, void *context) {
 }
 
 static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
-    abv_window_push(s_current_volume_ml, s_default_abv);
+    if (s_edit_drink_idx >= 0) {
+        Drink *drinks = storage_get_drinks();
+        drinks[s_edit_drink_idx].volume_ml = s_current_volume_ml;
+        storage_save_drinks(drinks, storage_get_num_drinks());
+        window_stack_pop(true);
+    } else {
+        abv_window_push(s_current_volume_ml, s_max_volume_ml, s_default_abv, s_shape);
+    }
 }
 
 static void click_config_provider(void *context) {
@@ -234,12 +243,24 @@ static void window_unload(Window *window) {
     s_window = NULL;
 }
 
-void portion_menu_push(float max_volume_ml, float default_abv, DrinkShape shape) {
+void portion_menu_push(float max_volume_ml, float current_volume_ml, float default_abv, DrinkShape shape, int edit_drink_idx) {
     s_max_volume_ml = max_volume_ml;
-    s_current_step_idx = NUM_VOLUME_STEPS - 1; 
-    s_current_volume_ml = s_max_volume_ml; 
     s_default_abv = default_abv;
     s_shape = shape;
+    s_edit_drink_idx = edit_drink_idx;
+
+    float target_pct = (current_volume_ml / max_volume_ml) * 100.0f;
+    s_current_step_idx = NUM_VOLUME_STEPS - 1; 
+    float min_diff = 100.0f;
+    for (int i = 0; i < (int)NUM_VOLUME_STEPS; i++) {
+        float diff = s_volume_steps_pct[i] - target_pct;
+        if (diff < 0) diff = -diff; 
+        if (diff < min_diff) {
+            min_diff = diff;
+            s_current_step_idx = i;
+        }
+    }
+    s_current_volume_ml = s_max_volume_ml * (s_volume_steps_pct[s_current_step_idx] / 100.0f);
 
     if(!s_window) {
         s_window = window_create();

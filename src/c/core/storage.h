@@ -10,11 +10,12 @@ typedef uint8_t ThemeMode;
 #define THEME_MODE_AUTO  2
 
 typedef struct {
-    float weight;
+    float weight; 
     float gender_constant;
     bool use_metric_volume;
     bool use_metric_weight;
-    ThemeMode theme_mode;
+    ThemeMode theme_mode; 
+    bool enable_portions; // NEW: Toggle to skip the portion UI
 } AppSettings;
 
 void storage_load_drinks(Drink* drinks, int* num_drinks);

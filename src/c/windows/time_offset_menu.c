@@ -6,7 +6,9 @@
 static Window *s_window;
 static MenuLayer *s_menu_layer;
 static float s_current_volume_ml;
+static float s_original_volume_ml;
 static float s_current_abv;
+static DrinkShape s_shape;
 
 // External declarations so we can wipe the wizard backstack cleanly
 extern void container_menu_destroy_safe(void);
@@ -46,7 +48,9 @@ static void select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *
     Drink new_drink = {
         .timestamp = timestamp,
         .volume_ml = s_current_volume_ml,
-        .abv = s_current_abv
+        .original_volume_ml = s_original_volume_ml,
+        .abv = s_current_abv,
+        .shape = s_shape
     };
     storage_add_drink(new_drink);
 
@@ -103,9 +107,11 @@ static void window_unload(Window *window) {
     s_window = NULL;
 }
 
-void time_offset_menu_push(float volume_ml, float abv) {
+void time_offset_menu_push(float volume_ml, float original_volume_ml, float abv, DrinkShape shape) {
     s_current_volume_ml = volume_ml;
+    s_original_volume_ml = original_volume_ml;
     s_current_abv = abv;
+    s_shape = shape;
 
     if(!s_window) {
         s_window = window_create();

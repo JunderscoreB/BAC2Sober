@@ -1,11 +1,9 @@
 #pragma once
 #include <pebble.h>
 
-// --- Core Constants ---
 #define METABOLISM_RATE_PER_HOUR 0.015f
 #define ALCOHOL_DENSITY_G_ML 0.789f
 
-// --- Global Enumerations ---
 typedef enum {
     SHAPE_CAN,
     SHAPE_TALLBOY,
@@ -19,17 +17,25 @@ typedef enum {
     SHAPE_CUSTOM
 } DrinkShape;
 
-// --- Core Data Structures ---
 typedef struct {
     float weight_kg;
     float gender_constant;
 } UserProfile;
 
+// Legacy structure for migrating existing saves
 typedef struct {
     time_t timestamp;
     float volume_ml;
     float abv;
+} OldDrink;
+
+// Expanded structure to remember container types
+typedef struct {
+    time_t timestamp;
+    float volume_ml;
+    float original_volume_ml;
+    float abv;
+    DrinkShape shape;
 } Drink;
 
-// --- Mathematical Prototypes ---
 float calculate_current_bac(UserProfile user, Drink *drinks, int num_drinks, time_t current_time);

@@ -4,6 +4,7 @@
 #include "core/touch_menu.h"
 #include "windows/container_menu.h"
 #include "windows/settings_menu.h"
+#include "windows/portion_menu.h"
 
 #define DROPOFF_DELAY_SECONDS (12 * 3600) 
 
@@ -294,7 +295,7 @@ static int16_t edit_get_cell_height_callback(MenuLayer *menu_layer, MenuIndex *c
 }
 
 static uint16_t edit_get_num_rows_callback(MenuLayer *menu_layer, uint16_t section_index, void *data) {
-    return 4; 
+    return 5; 
 }
 
 static void edit_draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuIndex *cell_index, void *data) {
@@ -321,7 +322,13 @@ static void edit_draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuI
             snprintf(subtitle, sizeof(subtitle), "%d ml (%d oz)", (int)d->volume_ml, (int)(d->volume_ml / 29.5735f));
             menu_cell_basic_draw(ctx, cell_layer, "Edit Volume", subtitle, NULL);
             break;
-        case 3: 
+        case 3: {
+            float max_vol = d->original_volume_ml > 0 ? d->original_volume_ml : d->volume_ml;
+            snprintf(subtitle, sizeof(subtitle), "Out of %d ml container", (int)max_vol);
+            menu_cell_basic_draw(ctx, cell_layer, "Edit Portion", subtitle, NULL);
+            break;
+        }
+        case 4: 
             menu_cell_basic_draw(ctx, cell_layer, "Delete Drink", "Remove from log", NULL);
             break;
     }
@@ -330,12 +337,18 @@ static void edit_draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuI
 static void edit_select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *data) {
     Drink *drinks = storage_get_drinks();
     int num_drinks = storage_get_num_drinks();
+    Drink *d = &drinks[s_editing_drink_idx];
     
     switch (cell_index->row) {
         case 0: s_current_edit_mode = EDIT_MODE_TIME; break;
         case 1: s_current_edit_mode = EDIT_MODE_ABV; break;
         case 2: s_current_edit_mode = EDIT_MODE_VOL; break;
-        case 3: 
+        case 3: {
+            float max_vol = d->original_volume_ml > 0 ? d->original_volume_ml : d->volume_ml;
+            portion_menu_push(max_vol, d->volume_ml, d->abv, d->shape, s_editing_drink_idx);
+            return; 
+        }
+        case 4: {
             for (int i = s_editing_drink_idx; i < num_drinks - 1; i++) {
                 drinks[i] = drinks[i + 1];
             }
@@ -344,6 +357,7 @@ static void edit_select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, v
             storage_load_drinks(drinks, &discard);
             window_stack_pop(true);
             return;
+        }
     }
     
     if (cell_index->row < 3) {

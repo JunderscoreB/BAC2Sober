@@ -34,8 +34,8 @@ static void down_click_handler(ClickRecognizerRef recognizer, void *context) {
 }
 
 static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
-    // We can skip the 'portion' vector screen since the user just manually picked their exact volume
-    abv_window_push(s_current_volume, s_default_abv);
+    // Provide both volumes, default abv, and default SHAPE_CUSTOM
+    abv_window_push(s_current_volume, s_current_volume, s_default_abv, SHAPE_CUSTOM);
 }
 
 static void click_config_provider(void *context) {
