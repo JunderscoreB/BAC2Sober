@@ -3,6 +3,7 @@
 #
 # Feel free to customize this to your needs.
 #
+#
 import os.path
 
 top = '.'

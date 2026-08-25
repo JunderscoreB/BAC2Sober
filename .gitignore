@@ -1,7 +1,7 @@
 cd ~/pebble_dev/BAC2Sober
 
 cat << 'EOF' > .gitignore
-# Pebble Build Artifacts
+## Pebble Build Artifacts
 build/
 .lock-waf*
 waf
