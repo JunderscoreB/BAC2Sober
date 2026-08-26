@@ -1,5 +1,22 @@
 #include <pebble.h>
 #include "touch_menu.h"
+#include "storage.h" // Needed to check wrist orientation preference
+
+#ifndef MENU_CELL_BASIC_CELL_HEIGHT
+#if defined(PBL_EMERY)
+#define MENU_CELL_BASIC_CELL_HEIGHT 60
+#else
+#define MENU_CELL_BASIC_CELL_HEIGHT 44
+#endif
+#endif
+
+#ifndef MENU_CELL_BASIC_HEADER_HEIGHT
+#if defined(PBL_EMERY)
+#define MENU_CELL_BASIC_HEADER_HEIGHT 22
+#else
+#define MENU_CELL_BASIC_HEADER_HEIGHT 16
+#endif
+#endif
 
 #ifdef PBL_TOUCH
 static Window *s_window = NULL;
@@ -7,6 +24,7 @@ static MenuLayer *s_menu = NULL;
 static MenuLayerCallbacks s_cbs;
 static void *s_ctx = NULL;
 
+static int16_t s_touch_start_x = 0;
 static int16_t s_touch_start_y = 0;
 static int16_t s_touch_last_y = 0;
 static bool s_is_drag = false;
@@ -58,12 +76,13 @@ static void menu_touch_handler(const TouchEvent *event, void *context) {
     ScrollLayer *scroll_layer = menu_layer_get_scroll_layer(s_menu);
 
     if (event->type == TouchEvent_Touchdown) {
+        s_touch_start_x = event->x;
         s_touch_start_y = event->y;
         s_touch_last_y = event->y;
         s_is_drag = false;
         s_scroll_velocity = 0;
         kill_kinetic_timer();
-    } 
+    }
     else if (event->type == TouchEvent_PositionUpdate) {
         if (!s_is_drag && abs(event->y - s_touch_start_y) > 15) {
             s_is_drag = true;
@@ -74,10 +93,22 @@ static void menu_touch_handler(const TouchEvent *event, void *context) {
             apply_clamped_scroll(scroll_layer, delta_y);
             s_touch_last_y = event->y;
         }
-    } 
+    }
     else if (event->type == TouchEvent_Liftoff) {
+        int16_t dx = event->x - s_touch_start_x;
+        int16_t dy = event->y - s_touch_start_y;
+
+        // Check for horizontal back swipe priority before processing vertical taps or drags
+        if (abs(dx) > 40 && abs(dx) > abs(dy)) {
+            AppSettings *settings = storage_get_settings();
+            bool is_back = settings->right_handed_mode ? (dx > 40) : (dx < -40);
+            if (is_back) {
+                window_stack_pop(true);
+                return;
+            }
+        }
+
         if (!s_is_drag) {
-            // Anchor touch translation exactly to the menu bounds to prevent offsets
             Layer *menu_base_layer = menu_layer_get_layer(s_menu);
             GPoint abs_origin = layer_convert_point_to_screen(menu_base_layer, GPointZero);
             int16_t local_y = event->y - abs_origin.y;
@@ -90,17 +121,18 @@ static void menu_touch_handler(const TouchEvent *event, void *context) {
             bool found = false;
 
             for (uint16_t s = 0; s < num_sections; s++) {
-                int16_t header_h = s_cbs.get_header_height ? s_cbs.get_header_height(s_menu, s, s_ctx) : 0;
+                int16_t header_h = s_cbs.get_header_height ? s_cbs.get_header_height(s_menu, s, s_ctx) : MENU_CELL_BASIC_HEADER_HEIGHT;
                 current_y += header_h;
-                
-                if (content_y < current_y) break; // Ignore taps precisely on section headers
+
+                if (content_y < current_y) break;
 
                 uint16_t num_rows = s_cbs.get_num_rows(s_menu, s, s_ctx);
                 for (uint16_t r = 0; r < num_rows; r++) {
                     MenuIndex idx = {.section = s, .row = r};
-                    int16_t row_h = s_cbs.get_cell_height ? s_cbs.get_cell_height(s_menu, &idx, s_ctx) : 44;
-                    
-                    if (content_y < current_y + row_h) {
+                    int16_t row_h = s_cbs.get_cell_height ? s_cbs.get_cell_height(s_menu, &idx, s_ctx) : MENU_CELL_BASIC_CELL_HEIGHT;
+                    int16_t sep_h = s_cbs.get_separator_height ? s_cbs.get_separator_height(s_menu, &idx, s_ctx) : 1;
+
+                    if (content_y < current_y + row_h + sep_h) {
                         MenuIndex current_selection = menu_layer_get_selected_index(s_menu);
                         if (current_selection.section == s && current_selection.row == r) {
                             if (s_cbs.select_click) s_cbs.select_click(s_menu, &idx, s_ctx);
@@ -110,7 +142,7 @@ static void menu_touch_handler(const TouchEvent *event, void *context) {
                         found = true;
                         break;
                     }
-                    current_y += row_h;
+                    current_y += row_h + sep_h;
                 }
                 if (found) break;
             }

@@ -9,12 +9,13 @@ static Drink s_drinks[MAX_DRINKS];
 static int s_num_drinks = 0;
 
 static AppSettings s_settings = {
-    .weight = 80.0f, 
-    .gender_constant = 0.68f, 
+    .weight = 80.0f,
+    .gender_constant = 0.68f,
     .use_metric_volume = true,
-    .use_metric_weight = true, 
+    .use_metric_weight = true,
     .theme_mode = THEME_MODE_LIGHT,
-    .enable_portions = true
+    .enable_portions = true,
+    .right_handed_mode = false
 };
 
 void storage_load_settings(void) {
@@ -44,15 +45,11 @@ GColor theme_text(void) { return is_dark_theme_active() ? GColorWhite : GColorBl
 GColor theme_highlight_bg(void) { return PBL_IF_COLOR_ELSE(GColorElectricUltramarine, theme_text()); }
 GColor theme_highlight_text(void) { return PBL_IF_COLOR_ELSE(GColorWhite, theme_bg()); }
 
-// --- Safe Data Migration ---
 void storage_load_drinks(Drink* drinks, int* num_drinks) {
     if (persist_exists(NUM_DRINKS_PERSIST_KEY)) {
         *num_drinks = persist_read_int(NUM_DRINKS_PERSIST_KEY);
         if (*num_drinks > 0 && persist_exists(DRINKS_PERSIST_KEY)) {
-            
-            // Check byte boundaries to detect legacy saves safely
             int bytes_read = persist_get_size(DRINKS_PERSIST_KEY);
-            // Verify bytes_read is > 0 before casting to size_t to resolve signedness warning
             if (bytes_read > 0 && (size_t)bytes_read == sizeof(OldDrink) * (*num_drinks)) {
                 OldDrink old_drinks[MAX_DRINKS];
                 persist_read_data(DRINKS_PERSIST_KEY, old_drinks, sizeof(OldDrink) * (*num_drinks));
@@ -64,9 +61,8 @@ void storage_load_drinks(Drink* drinks, int* num_drinks) {
                     s_drinks[i].shape = SHAPE_CUSTOM;
                     drinks[i] = s_drinks[i];
                 }
-                storage_save_drinks(s_drinks, *num_drinks); // Save new format immediately
+                storage_save_drinks(s_drinks, *num_drinks);
             } else {
-                // Standard modern load
                 persist_read_data(DRINKS_PERSIST_KEY, s_drinks, sizeof(Drink) * (*num_drinks));
                 for(int i = 0; i < *num_drinks; i++) {
                     drinks[i] = s_drinks[i];

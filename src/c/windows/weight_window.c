@@ -19,34 +19,29 @@ static void update_weight_text(void) {
     text_layer_set_text(s_weight_layer, s_buffer);
 }
 
-// --- Interaction Handlers (Buttons & Touch) ---
 static void up_click_handler(ClickRecognizerRef recognizer, void *context) {
     s_current_weight += 1.0f;
-    
-    // Set reasonable upper bounds based on the chosen unit
+
     if (s_is_metric && s_current_weight > 300.0f) s_current_weight = 300.0f;
     else if (!s_is_metric && s_current_weight > 600.0f) s_current_weight = 600.0f;
-    
+
     update_weight_text();
 }
 
 static void down_click_handler(ClickRecognizerRef recognizer, void *context) {
     s_current_weight -= 1.0f;
-    
-    // Set reasonable lower bounds based on the chosen unit
+
     if (s_is_metric && s_current_weight < 30.0f) s_current_weight = 30.0f;
     else if (!s_is_metric && s_current_weight < 60.0f) s_current_weight = 60.0f;
-    
+
     update_weight_text();
 }
 
 static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
-    // Save the new weight setting globally
     AppSettings *settings = storage_get_settings();
     settings->weight = s_current_weight;
     storage_save_settings();
-    
-    // Return to the Settings Menu
+
     window_stack_pop(true);
 }
 
@@ -57,30 +52,44 @@ static void click_config_provider(void *context) {
 }
 
 #ifdef PBL_TOUCH
+static int16_t s_touch_start_x = 0;
 static int16_t s_touch_start_y = 0;
 static int16_t s_touch_last_y = 0;
 static bool s_is_drag = false;
 
 static void touch_handler(const TouchEvent *event, void *context) {
     if (event->type == TouchEvent_Touchdown) {
+        s_touch_start_x = event->x;
         s_touch_start_y = event->y;
         s_touch_last_y = event->y;
         s_is_drag = false;
     } else if (event->type == TouchEvent_PositionUpdate) {
         if (!s_is_drag && abs(event->y - s_touch_start_y) > 10) s_is_drag = true;
-        
+
         if (s_is_drag) {
             int16_t delta = event->y - s_touch_last_y;
-            if (delta < -15) { // Swipe up
+            if (delta < -15) {
                 up_click_handler(NULL, NULL);
                 s_touch_last_y = event->y;
-            } else if (delta > 15) { // Swipe down
+            } else if (delta > 15) {
                 down_click_handler(NULL, NULL);
                 s_touch_last_y = event->y;
             }
         }
     } else if (event->type == TouchEvent_Liftoff) {
-        if (!s_is_drag) select_click_handler(NULL, NULL); // Strong tap saves and exits!
+        int16_t dx = event->x - s_touch_start_x;
+        int16_t dy = event->y - s_touch_start_y;
+
+        if (abs(dx) > 40 && abs(dx) > abs(dy)) {
+            AppSettings *settings = storage_get_settings();
+            bool is_back = settings->right_handed_mode ? (dx > 40) : (dx < -40);
+            if (is_back) {
+                window_stack_pop(true);
+                return;
+            }
+        }
+
+        if (!s_is_drag) select_click_handler(NULL, NULL);
     }
 }
 #endif
@@ -121,7 +130,7 @@ static void window_load(Window *window) {
     text_layer_set_background_color(s_weight_layer, GColorClear);
     text_layer_set_text_color(s_weight_layer, theme_text());
     layer_add_child(window_layer, text_layer_get_layer(s_weight_layer));
-    
+
     update_weight_text();
 }
 
@@ -133,7 +142,6 @@ static void window_unload(Window *window) {
 }
 
 void weight_window_push(void) {
-    // Load the user's established preferences dynamically before setting up the UI
     AppSettings *settings = storage_get_settings();
     s_current_weight = settings->weight;
     s_is_metric = settings->use_metric_weight;

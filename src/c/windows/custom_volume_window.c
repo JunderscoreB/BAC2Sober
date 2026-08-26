@@ -16,7 +16,8 @@ static void update_volume_text(void) {
     if (settings->use_metric_volume) {
         snprintf(s_buffer, sizeof(s_buffer), "%dml", (int)s_current_volume);
     } else {
-        snprintf(s_buffer, sizeof(s_buffer), "%doz", (int)(s_current_volume / 29.5735f));
+        float oz = s_current_volume / 29.5735f;
+        snprintf(s_buffer, sizeof(s_buffer), "%d.%doz", (int)oz, (int)(oz * 10.0f) % 10);
     }
     text_layer_set_text(s_volume_layer, s_buffer);
 }
@@ -34,7 +35,6 @@ static void down_click_handler(ClickRecognizerRef recognizer, void *context) {
 }
 
 static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
-    // Provide both volumes, default abv, and default SHAPE_CUSTOM
     abv_window_push(s_current_volume, s_current_volume, s_default_abv, SHAPE_CUSTOM);
 }
 
@@ -45,30 +45,44 @@ static void click_config_provider(void *context) {
 }
 
 #ifdef PBL_TOUCH
+static int16_t s_touch_start_x = 0;
 static int16_t s_touch_start_y = 0;
 static int16_t s_touch_last_y = 0;
 static bool s_is_drag = false;
 
 static void touch_handler(const TouchEvent *event, void *context) {
     if (event->type == TouchEvent_Touchdown) {
+        s_touch_start_x = event->x;
         s_touch_start_y = event->y;
         s_touch_last_y = event->y;
         s_is_drag = false;
     } else if (event->type == TouchEvent_PositionUpdate) {
         if (!s_is_drag && abs(event->y - s_touch_start_y) > 10) s_is_drag = true;
-        
+
         if (s_is_drag) {
             int16_t delta = event->y - s_touch_last_y;
-            if (delta < -15) { 
+            if (delta < -15) {
                 up_click_handler(NULL, NULL);
                 s_touch_last_y = event->y;
-            } else if (delta > 15) { 
+            } else if (delta > 15) {
                 down_click_handler(NULL, NULL);
                 s_touch_last_y = event->y;
             }
         }
     } else if (event->type == TouchEvent_Liftoff) {
-        if (!s_is_drag) select_click_handler(NULL, NULL); 
+        int16_t dx = event->x - s_touch_start_x;
+        int16_t dy = event->y - s_touch_start_y;
+
+        if (abs(dx) > 40 && abs(dx) > abs(dy)) {
+            AppSettings *settings = storage_get_settings();
+            bool is_back = settings->right_handed_mode ? (dx > 40) : (dx < -40);
+            if (is_back) {
+                window_stack_pop(true);
+                return;
+            }
+        }
+
+        if (!s_is_drag) select_click_handler(NULL, NULL);
     }
 }
 #endif
@@ -104,7 +118,7 @@ static void window_load(Window *window) {
     text_layer_set_background_color(s_volume_layer, GColorClear);
     text_layer_set_text_color(s_volume_layer, theme_text());
     layer_add_child(window_layer, text_layer_get_layer(s_volume_layer));
-    
+
     update_volume_text();
 }
 

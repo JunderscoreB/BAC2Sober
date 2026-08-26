@@ -40,15 +40,15 @@ static const DrinkContainer s_wine_options[] = {
     {"Full Bottle", 750.0f, 12.5f, SHAPE_WINE_BOTTLE}
 };
 
-static uint16_t get_num_sections_callback(MenuLayer *menu_layer, void *data) { 
-    return 4; 
+static uint16_t get_num_sections_callback(MenuLayer *menu_layer, void *data) {
+    return 4;
 }
 
 static uint16_t get_num_rows_callback(MenuLayer *menu_layer, uint16_t section_index, void *data) {
     if (section_index == 0) return NUM_LIQUOR_OPTIONS;
     if (section_index == 1) return NUM_BEER_OPTIONS;
     if (section_index == 2) return NUM_WINE_OPTIONS;
-    if (section_index == 3) return 1; 
+    if (section_index == 3) return 1;
     return 0;
 }
 
@@ -75,12 +75,23 @@ static void draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuIndex 
 
     char subtitle[32];
     const DrinkContainer *container;
-    
+
     if (cell_index->section == 0) container = &s_liquor_options[cell_index->row];
     else if (cell_index->section == 1) container = &s_beer_options[cell_index->row];
     else container = &s_wine_options[cell_index->row];
 
-    snprintf(subtitle, sizeof(subtitle), "%d ml (%d oz)", (int)container->volume_ml, (int)(container->volume_ml / 29.5735f));
+    AppSettings *settings = storage_get_settings();
+    float oz = container->volume_ml / 29.5735f;
+    int oz_w = (int)oz;
+    int oz_d = (int)(oz * 10.0f) % 10;
+
+    // Conditionally swap the placement of the units so the preferred system leads
+    if (settings->use_metric_volume) {
+        snprintf(subtitle, sizeof(subtitle), "%d ml (%d.%d oz)", (int)container->volume_ml, oz_w, oz_d);
+    } else {
+        snprintf(subtitle, sizeof(subtitle), "%d.%d oz (%d ml)", oz_w, oz_d, (int)container->volume_ml);
+    }
+
     menu_cell_basic_draw(ctx, cell_layer, container->name, subtitle, NULL);
 }
 
@@ -97,10 +108,8 @@ static void select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *
 
     AppSettings *settings = storage_get_settings();
     if (settings->enable_portions) {
-        // Pass original volume, current volume, default abv, shape, and -1 (not an edit)
         portion_menu_push(selected->volume_ml, selected->volume_ml, selected->default_abv, selected->shape, -1);
     } else {
-        // Skip portion wizard, pass volume for both fields, abv, and shape
         abv_window_push(selected->volume_ml, selected->volume_ml, selected->default_abv, selected->shape);
     }
 }
@@ -121,7 +130,7 @@ static void window_appear(Window *window) {
         menu_layer_set_normal_colors(s_menu_layer, theme_bg(), theme_text());
         menu_layer_set_highlight_colors(s_menu_layer, theme_highlight_bg(), theme_highlight_text());
         menu_layer_reload_data(s_menu_layer);
-        
+
         touch_menu_subscribe(window, s_menu_layer, s_menu_cbs, NULL);
     }
 }
@@ -135,7 +144,7 @@ static void window_load(Window *window) {
     GRect bounds = layer_get_bounds(window_layer);
 
     s_menu_layer = menu_layer_create(bounds);
-    
+
     window_set_background_color(window, theme_bg());
     menu_layer_set_normal_colors(s_menu_layer, theme_bg(), theme_text());
     menu_layer_set_highlight_colors(s_menu_layer, theme_highlight_bg(), theme_highlight_text());

@@ -5,7 +5,7 @@
 #include "../core/touch_menu.h"
 
 static const float s_volume_steps_pct[] = {
-    10.0f, 20.0f, 25.0f, 30.0f, 33.3333f, 40.0f, 50.0f, 
+    10.0f, 20.0f, 25.0f, 30.0f, 33.3333f, 40.0f, 50.0f,
     60.0f, 66.6667f, 70.0f, 75.0f, 80.0f, 90.0f, 100.0f
 };
 #define NUM_VOLUME_STEPS (sizeof(s_volume_steps_pct) / sizeof(s_volume_steps_pct[0]))
@@ -24,13 +24,14 @@ static int s_edit_drink_idx = -1;
 static void update_text_layer(void) {
     static char s_buffer[32];
     AppSettings *settings = storage_get_settings();
-    
+
     int percent = (int)(s_volume_steps_pct[s_current_step_idx] + 0.5f);
-    
+
     if (settings->use_metric_volume) {
         snprintf(s_buffer, sizeof(s_buffer), "%d%% - %dml", percent, (int)(s_current_volume_ml + 0.5f));
     } else {
-        snprintf(s_buffer, sizeof(s_buffer), "%d%% - %doz", percent, (int)((s_current_volume_ml / 29.5735f) + 0.5f));
+        float oz = s_current_volume_ml / 29.5735f;
+        snprintf(s_buffer, sizeof(s_buffer), "%d%% - %d.%doz", percent, (int)oz, (int)(oz * 10.0f) % 10);
     }
     text_layer_set_text(s_portion_text_layer, s_buffer);
 }
@@ -45,7 +46,7 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
     GColor liquid_color = PBL_IF_COLOR_ELSE(is_wine ? GColorDarkCandyAppleRed : (s_shape == SHAPE_SHOT ? GColorRajah : GColorChromeYellow), theme_text());
     GColor glass_color = theme_text();
 
-    static const GPoint s_can_pts[] = {{5,0}, {55,0}, {60,10}, {60,90}, {55,100}, {5,100}, {0,90}, {0,10}}; 
+    static const GPoint s_can_pts[] = {{5,0}, {55,0}, {60,10}, {60,90}, {55,100}, {5,100}, {0,90}, {0,10}};
     static const GPoint s_tallboy_pts[] = {{5,0}, {55,0}, {60,10}, {60,130}, {55,140}, {5,140}, {0,130}, {0,10}};
     static const GPoint s_bottle_pts[] = {{15,0}, {29,0}, {29,4}, {28,6}, {28,35}, {40,75}, {40,140}, {36,150}, {8,150}, {4,140}, {4,75}, {16,35}, {16,6}, {15,4}};
     static const GPoint s_wine_bottle_pts[] = {{16,0}, {30,0}, {30,40}, {42,90}, {42,155}, {38,160}, {8,160}, {4,155}, {4,90}, {16,40}};
@@ -71,7 +72,7 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
 
     int y_offset = cy - h/2;
     if (s_shape == SHAPE_WINE_BOTTLE || s_shape == SHAPE_BOTTLE) {
-        y_offset += 10; 
+        y_offset += 10;
     }
 
     if (s_shape == SHAPE_PINT) {
@@ -95,7 +96,7 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
 
     int empty_h;
     if (s_shape == SHAPE_BOTTLE || s_shape == SHAPE_WINE_BOTTLE || s_shape == SHAPE_GROWLER) {
-        float neck_vol_pct = 0.10f; 
+        float neck_vol_pct = 0.10f;
         if (fill_ratio <= (1.0f - neck_vol_pct)) {
             float body_fill = fill_ratio / (1.0f - neck_vol_pct);
             empty_h = neck_h + body_h - (int)(body_fill * body_h);
@@ -121,7 +122,7 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
     graphics_context_set_stroke_color(ctx, glass_color);
     graphics_context_set_stroke_width(ctx, 3);
     gpath_draw_outline(ctx, path);
-    
+
     graphics_context_set_stroke_width(ctx, 1);
     if (s_shape == SHAPE_CAN || s_shape == SHAPE_TALLBOY || s_shape == SHAPE_CUSTOM) {
         graphics_draw_line(ctx, GPoint(cx - w/2 + 5, y_offset), GPoint(cx + w/2 - 5, y_offset));
@@ -172,30 +173,44 @@ static void click_config_provider(void *context) {
 }
 
 #ifdef PBL_TOUCH
+static int16_t s_touch_start_x = 0;
 static int16_t s_touch_start_y = 0;
 static int16_t s_touch_last_y = 0;
 static bool s_is_drag = false;
 
 static void touch_handler(const TouchEvent *event, void *context) {
     if (event->type == TouchEvent_Touchdown) {
+        s_touch_start_x = event->x;
         s_touch_start_y = event->y;
         s_touch_last_y = event->y;
         s_is_drag = false;
     } else if (event->type == TouchEvent_PositionUpdate) {
         if (!s_is_drag && abs(event->y - s_touch_start_y) > 10) s_is_drag = true;
-        
+
         if (s_is_drag) {
             int16_t delta = event->y - s_touch_last_y;
-            if (delta < -15) { 
+            if (delta < -15) {
                 up_click_handler(NULL, NULL);
                 s_touch_last_y = event->y;
-            } else if (delta > 15) { 
+            } else if (delta > 15) {
                 down_click_handler(NULL, NULL);
                 s_touch_last_y = event->y;
             }
         }
     } else if (event->type == TouchEvent_Liftoff) {
-        if (!s_is_drag) select_click_handler(NULL, NULL); 
+        int16_t dx = event->x - s_touch_start_x;
+        int16_t dy = event->y - s_touch_start_y;
+
+        if (abs(dx) > 40 && abs(dx) > abs(dy)) {
+            AppSettings *settings = storage_get_settings();
+            bool is_back = settings->right_handed_mode ? (dx > 40) : (dx < -40);
+            if (is_back) {
+                window_stack_pop(true);
+                return;
+            }
+        }
+
+        if (!s_is_drag) select_click_handler(NULL, NULL);
     }
 }
 #endif
@@ -232,7 +247,7 @@ static void window_load(Window *window) {
     text_layer_set_background_color(s_portion_text_layer, GColorClear);
     text_layer_set_text_color(s_portion_text_layer, theme_text());
     layer_add_child(window_layer, text_layer_get_layer(s_portion_text_layer));
-    
+
     update_text_layer();
 }
 
@@ -250,11 +265,11 @@ void portion_menu_push(float max_volume_ml, float current_volume_ml, float defau
     s_edit_drink_idx = edit_drink_idx;
 
     float target_pct = (current_volume_ml / max_volume_ml) * 100.0f;
-    s_current_step_idx = NUM_VOLUME_STEPS - 1; 
+    s_current_step_idx = NUM_VOLUME_STEPS - 1;
     float min_diff = 100.0f;
     for (int i = 0; i < (int)NUM_VOLUME_STEPS; i++) {
         float diff = s_volume_steps_pct[i] - target_pct;
-        if (diff < 0) diff = -diff; 
+        if (diff < 0) diff = -diff;
         if (diff < min_diff) {
             min_diff = diff;
             s_current_step_idx = i;

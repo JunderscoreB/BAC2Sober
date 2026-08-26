@@ -6,7 +6,7 @@
 #include "windows/settings_menu.h"
 #include "windows/portion_menu.h"
 
-#define DROPOFF_DELAY_SECONDS (12 * 3600) 
+#define DROPOFF_DELAY_SECONDS (12 * 3600)
 
 typedef enum { EDIT_MODE_TIME, EDIT_MODE_ABV, EDIT_MODE_VOL } EditMode;
 
@@ -55,7 +55,7 @@ static void update_bac_calculations(void) {
     AppSettings *settings = storage_get_settings();
     float weight_in_kg = settings->use_metric_weight ? settings->weight : (settings->weight / 2.20462f);
     UserProfile user = { .weight_kg = weight_in_kg, .gender_constant = settings->gender_constant };
-    
+
     Drink *drinks = storage_get_drinks();
     time_t current_time = time(NULL);
 
@@ -73,7 +73,7 @@ static void update_bac_calculations(void) {
 
 static void cleanup_old_drinks(void) {
     if (storage_get_num_drinks() == 0) return;
-    
+
     update_bac_calculations();
     time_t now = time(NULL);
 
@@ -104,7 +104,7 @@ static void update_dashboard_text(void) {
     int bac_whole = (int)s_current_bac;
     int bac_thousands = (int)(s_current_bac * 1000.0f) % 1000;
     snprintf(s_bac_buffer, sizeof(s_bac_buffer), "BAC: %d.%03d", bac_whole, bac_thousands);
-    
+
     if (s_current_bac > 0.0f) {
         struct tm *sober_tm = localtime(&s_sober_time);
         strftime(s_sober_buffer, sizeof(s_sober_buffer), "Sober by %H:%M", sober_tm);
@@ -119,7 +119,7 @@ static void update_dashboard_text(void) {
         text_layer_set_background_color(s_bac_layer, header_bg);
         text_layer_set_text_color(s_bac_layer, header_text);
         text_layer_set_text(s_bac_layer, s_bac_buffer);
-        
+
         text_layer_set_background_color(s_sober_layer, header_bg);
         text_layer_set_text_color(s_sober_layer, header_text);
         text_layer_set_text(s_sober_layer, s_sober_buffer);
@@ -130,7 +130,7 @@ static void tick_handler(struct tm *tick_time, TimeUnits units_changed) {
     cleanup_old_drinks();
     update_bac_calculations();
     update_dashboard_text();
-    
+
     if (s_menu_layer) {
         apply_theme_to_menu(s_main_window, s_menu_layer);
         menu_layer_reload_data(s_menu_layer);
@@ -151,7 +151,8 @@ static void update_value_edit_text(void) {
         int abv_decimal = abv_tenths % 10;
         snprintf(s_val_buf, sizeof(s_val_buf), "%d.%d%%", abv_whole, abv_decimal);
     } else if (s_current_edit_mode == EDIT_MODE_VOL) {
-        snprintf(s_val_buf, sizeof(s_val_buf), "%dml (%doz)", (int)d->volume_ml, (int)(d->volume_ml / 29.5735f));
+        float oz = d->volume_ml / 29.5735f;
+        snprintf(s_val_buf, sizeof(s_val_buf), "%dml (%d.%doz)", (int)d->volume_ml, (int)oz, (int)(oz * 10.0f) % 10);
     }
     text_layer_set_text(s_value_edit_layer, s_val_buf);
 }
@@ -161,11 +162,11 @@ static void value_edit_up_click_handler(ClickRecognizerRef recognizer, void *con
     Drink *d = &drinks[s_editing_drink_idx];
 
     if (s_current_edit_mode == EDIT_MODE_TIME) {
-        time_t remainder = d->timestamp % 300; 
+        time_t remainder = d->timestamp % 300;
         if (remainder == 0) {
-            d->timestamp += 300; 
+            d->timestamp += 300;
         } else {
-            d->timestamp += (300 - remainder); 
+            d->timestamp += (300 - remainder);
         }
         if (d->timestamp > time(NULL)) d->timestamp = time(NULL);
     } else if (s_current_edit_mode == EDIT_MODE_ABV) {
@@ -185,9 +186,9 @@ static void value_edit_down_click_handler(ClickRecognizerRef recognizer, void *c
     if (s_current_edit_mode == EDIT_MODE_TIME) {
         time_t remainder = d->timestamp % 300;
         if (remainder == 0) {
-            d->timestamp -= 300; 
+            d->timestamp -= 300;
         } else {
-            d->timestamp -= remainder; 
+            d->timestamp -= remainder;
         }
     } else if (s_current_edit_mode == EDIT_MODE_ABV) {
         if (d->abv > 0.001f) d->abv -= 0.001f;
@@ -212,29 +213,43 @@ static void value_edit_click_config_provider(void *context) {
 }
 
 #ifdef PBL_TOUCH
+static int16_t s_ve_touch_start_x = 0;
 static int16_t s_ve_touch_start_y = 0;
 static int16_t s_ve_touch_last_y = 0;
 static bool s_ve_is_drag = false;
 
 static void value_edit_touch_handler(const TouchEvent *event, void *context) {
     if (event->type == TouchEvent_Touchdown) {
+        s_ve_touch_start_x = event->x;
         s_ve_touch_start_y = event->y;
         s_ve_touch_last_y = event->y;
         s_ve_is_drag = false;
     } else if (event->type == TouchEvent_PositionUpdate) {
         if (!s_ve_is_drag && abs(event->y - s_ve_touch_start_y) > 10) s_ve_is_drag = true;
-        
+
         if (s_ve_is_drag) {
             int16_t delta = event->y - s_ve_touch_last_y;
-            if (delta < -15) { 
-                value_edit_up_click_handler(NULL, NULL); 
-                s_ve_touch_last_y = event->y; 
-            } else if (delta > 15) { 
-                value_edit_down_click_handler(NULL, NULL); 
-                s_ve_touch_last_y = event->y; 
+            if (delta < -15) {
+                value_edit_up_click_handler(NULL, NULL);
+                s_ve_touch_last_y = event->y;
+            } else if (delta > 15) {
+                value_edit_down_click_handler(NULL, NULL);
+                s_ve_touch_last_y = event->y;
             }
         }
     } else if (event->type == TouchEvent_Liftoff) {
+        int16_t dx = event->x - s_ve_touch_start_x;
+        int16_t dy = event->y - s_ve_touch_start_y;
+
+        if (abs(dx) > 40 && abs(dx) > abs(dy)) {
+            AppSettings *settings = storage_get_settings();
+            bool is_back = settings->right_handed_mode ? (dx > 40) : (dx < -40);
+            if (is_back) {
+                window_stack_pop(true);
+                return;
+            }
+        }
+
         if (!s_ve_is_drag) value_edit_select_click_handler(NULL, NULL);
     }
 }
@@ -279,7 +294,7 @@ static void value_edit_window_load(Window *window) {
     text_layer_set_background_color(s_value_edit_layer, GColorClear);
     text_layer_set_text_color(s_value_edit_layer, theme_text());
     layer_add_child(window_layer, text_layer_get_layer(s_value_edit_layer));
-    
+
     update_value_edit_text();
 }
 
@@ -295,7 +310,7 @@ static int16_t edit_get_cell_height_callback(MenuLayer *menu_layer, MenuIndex *c
 }
 
 static uint16_t edit_get_num_rows_callback(MenuLayer *menu_layer, uint16_t section_index, void *data) {
-    return 5; 
+    return 5;
 }
 
 static void edit_draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuIndex *cell_index, void *data) {
@@ -304,13 +319,13 @@ static void edit_draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuI
     char subtitle[32];
 
     switch (cell_index->row) {
-        case 0: { 
+        case 0: {
             struct tm *tick_time = localtime((time_t*)&d->timestamp);
             strftime(subtitle, sizeof(subtitle), "%H:%M", tick_time);
             menu_cell_basic_draw(ctx, cell_layer, "Time Finished", subtitle, NULL);
             break;
         }
-        case 1: { 
+        case 1: {
             int abv_tenths = (int)(d->abv * 1000.0f + 0.5f);
             int abv_whole = abv_tenths / 10;
             int abv_decimal = abv_tenths % 10;
@@ -318,17 +333,19 @@ static void edit_draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuI
             menu_cell_basic_draw(ctx, cell_layer, "Edit ABV", subtitle, NULL);
             break;
         }
-        case 2: 
-            snprintf(subtitle, sizeof(subtitle), "%d ml (%d oz)", (int)d->volume_ml, (int)(d->volume_ml / 29.5735f));
+        case 2: {
+            float oz = d->volume_ml / 29.5735f;
+            snprintf(subtitle, sizeof(subtitle), "%d ml (%d.%d oz)", (int)d->volume_ml, (int)oz, (int)(oz * 10.0f) % 10);
             menu_cell_basic_draw(ctx, cell_layer, "Edit Volume", subtitle, NULL);
             break;
+        }
         case 3: {
             float max_vol = d->original_volume_ml > 0 ? d->original_volume_ml : d->volume_ml;
             snprintf(subtitle, sizeof(subtitle), "Out of %d ml container", (int)max_vol);
             menu_cell_basic_draw(ctx, cell_layer, "Edit Portion", subtitle, NULL);
             break;
         }
-        case 4: 
+        case 4:
             menu_cell_basic_draw(ctx, cell_layer, "Delete Drink", "Remove from log", NULL);
             break;
     }
@@ -338,7 +355,7 @@ static void edit_select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, v
     Drink *drinks = storage_get_drinks();
     int num_drinks = storage_get_num_drinks();
     Drink *d = &drinks[s_editing_drink_idx];
-    
+
     switch (cell_index->row) {
         case 0: s_current_edit_mode = EDIT_MODE_TIME; break;
         case 1: s_current_edit_mode = EDIT_MODE_ABV; break;
@@ -346,7 +363,7 @@ static void edit_select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, v
         case 3: {
             float max_vol = d->original_volume_ml > 0 ? d->original_volume_ml : d->volume_ml;
             portion_menu_push(max_vol, d->volume_ml, d->abv, d->shape, s_editing_drink_idx);
-            return; 
+            return;
         }
         case 4: {
             for (int i = s_editing_drink_idx; i < num_drinks - 1; i++) {
@@ -359,7 +376,7 @@ static void edit_select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, v
             return;
         }
     }
-    
+
     if (cell_index->row < 3) {
         if (!s_value_edit_window) {
             s_value_edit_window = window_create();
@@ -397,7 +414,7 @@ static void edit_window_disappear(Window *window) {
 static void edit_window_load(Window *window) {
     Layer *window_layer = window_get_root_layer(window);
     GRect bounds = layer_get_bounds(window_layer);
-    
+
     s_edit_menu_layer = menu_layer_create(bounds);
     apply_theme_to_menu(window, s_edit_menu_layer);
 
@@ -413,14 +430,14 @@ static void edit_window_unload(Window *window) {
 }
 
 static uint16_t main_get_num_sections_callback(MenuLayer *menu_layer, void *data) {
-    return 4; 
+    return 4;
 }
 
 static uint16_t main_get_num_rows_callback(MenuLayer *menu_layer, uint16_t section_index, void *data) {
-    if (section_index == 0) return 1; 
-    if (section_index == 1) return storage_get_num_drinks(); 
-    if (section_index == 2) return 1; 
-    if (section_index == 3) return 1; 
+    if (section_index == 0) return 1;
+    if (section_index == 1) return storage_get_num_drinks();
+    if (section_index == 2) return 1;
+    if (section_index == 3) return 1;
     return 0;
 }
 
@@ -429,7 +446,7 @@ static int16_t main_get_cell_height_callback(MenuLayer *menu_layer, MenuIndex *c
 }
 
 static int16_t main_get_header_height_callback(MenuLayer *menu_layer, uint16_t section_index, void *data) {
-    if (section_index == 3) return 0; 
+    if (section_index == 3) return 0;
     return UI_HEADER_HEIGHT;
 }
 
@@ -442,21 +459,23 @@ static void main_draw_header_callback(GContext* ctx, const Layer *cell_layer, ui
 static void main_draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuIndex *cell_index, void *data) {
     if (cell_index->section == 0) {
         menu_cell_basic_draw(ctx, cell_layer, "Add Drink", "Select Volume & ABV", NULL);
-    } 
+    }
     else if (cell_index->section == 1) {
         Drink *drinks = storage_get_drinks();
         Drink *d = &drinks[cell_index->row];
         char title[32];
         char subtitle[32];
-        
+
         struct tm *tick_time = localtime((time_t*)&d->timestamp);
         strftime(title, sizeof(title), "%H:%M", tick_time);
-        
+
         int abv_tenths = (int)(d->abv * 1000.0f + 0.5f);
         int abv_whole = abv_tenths / 10;
         int abv_decimal = abv_tenths % 10;
-        snprintf(subtitle, sizeof(subtitle), "%dml (%doz) | %d.%d%%", (int)d->volume_ml, (int)(d->volume_ml / 29.5735f), abv_whole, abv_decimal);
-        
+
+        float oz = d->volume_ml / 29.5735f;
+        snprintf(subtitle, sizeof(subtitle), "%dml (%d.%doz) | %d.%d%%", (int)d->volume_ml, (int)oz, (int)(oz * 10.0f) % 10, abv_whole, abv_decimal);
+
         menu_cell_basic_draw(ctx, cell_layer, title, subtitle, NULL);
     }
     else if (cell_index->section == 2) {
@@ -464,14 +483,14 @@ static void main_draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuI
     }
     else if (cell_index->section == 3) {
         static char s_time_buffer[16];
-        clock_copy_time_string(s_time_buffer, sizeof(s_time_buffer)); 
+        clock_copy_time_string(s_time_buffer, sizeof(s_time_buffer));
         menu_cell_basic_draw(ctx, cell_layer, "Current Time", s_time_buffer, NULL);
     }
 }
 
 static void main_select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *data) {
     if (cell_index->section == 0) {
-        container_menu_push(); 
+        container_menu_push();
     } else if (cell_index->section == 1) {
         s_editing_drink_idx = cell_index->row;
         if (!s_edit_window) {
@@ -525,7 +544,7 @@ static void main_window_load(Window *window) {
 }
 
 static void main_window_appear(Window *window) {
-    cleanup_old_drinks(); 
+    cleanup_old_drinks();
     update_bac_calculations();
     update_dashboard_text();
     if (s_menu_layer) {
@@ -550,12 +569,12 @@ static void main_window_unload(Window *window) {
 static void init(void) {
     int num_drinks = 0;
     Drink drinks[MAX_DRINKS];
-    
+
     storage_load_settings();
     storage_load_drinks(drinks, &num_drinks);
-    
-    tick_timer_service_subscribe(MINUTE_UNIT, tick_handler); 
-    
+
+    tick_timer_service_subscribe(MINUTE_UNIT, tick_handler);
+
     s_main_window = window_create();
     window_set_window_handlers(s_main_window, (WindowHandlers) {
         .load = main_window_load,
@@ -566,8 +585,8 @@ static void init(void) {
     window_stack_push(s_main_window, true);
 }
 
-static void deinit(void) { 
-    tick_timer_service_unsubscribe(); 
+static void deinit(void) {
+    tick_timer_service_unsubscribe();
 }
 
 int main(void) {
