@@ -4,11 +4,13 @@
 #include "../core/storage.h"
 #include "../core/touch_menu.h"
 
+extern void app_reset_idle_timer(void);
+
 static Window *s_window;
 static MenuLayer *s_menu_layer;
 
 static uint16_t get_num_rows_callback(MenuLayer *menu_layer, uint16_t section_index, void *data) {
-    return 8; // Expanded for Right Handed toggle
+    return 10;
 }
 
 static int16_t get_cell_height_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *data) {
@@ -39,17 +41,35 @@ static void draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuIndex 
         snprintf(subtitle, sizeof(subtitle), settings->right_handed_mode ? "Right (Swipe ->)" : "Left (Swipe <-)");
         menu_cell_basic_draw(ctx, cell_layer, "Back Gesture", subtitle, NULL);
     } else if (cell_index->row == 6) {
+        if (settings->target_bac < 0.0f) {
+            snprintf(subtitle, sizeof(subtitle), "Disable timeline reporting");
+        } else {
+            int target_tenths = (int)(settings->target_bac * 100.0f + 0.5f);
+            snprintf(subtitle, sizeof(subtitle), "%d.%02d%%", target_tenths / 100, target_tenths % 100);
+        }
+        menu_cell_basic_draw(ctx, cell_layer, "Target BAC (for timeline)", subtitle, NULL);
+    } else if (cell_index->row == 7) {
+        if (settings->idle_timeout_mins == 0) {
+            snprintf(subtitle, sizeof(subtitle), "Infinite");
+        } else if (settings->idle_timeout_mins == 1) {
+            snprintf(subtitle, sizeof(subtitle), "1 Minute");
+        } else {
+            snprintf(subtitle, sizeof(subtitle), "%d Minutes", settings->idle_timeout_mins);
+        }
+        menu_cell_basic_draw(ctx, cell_layer, "Idle Timeout", subtitle, NULL);
+    } else if (cell_index->row == 8) {
         if (settings->theme_mode == THEME_MODE_LIGHT) snprintf(subtitle, sizeof(subtitle), "Light");
         else if (settings->theme_mode == THEME_MODE_DARK) snprintf(subtitle, sizeof(subtitle), "Dark");
         else snprintf(subtitle, sizeof(subtitle), "Auto (6pm - 6am)");
         menu_cell_basic_draw(ctx, cell_layer, "Theme", subtitle, NULL);
-    } else if (cell_index->row == 7) {
+    } else if (cell_index->row == 9) {
         menu_cell_basic_draw(ctx, cell_layer, "Clear All Drinks", "Resets BAC to 0.00", NULL);
     }
 }
 
 static void select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *data) {
     AppSettings *settings = storage_get_settings();
+    app_reset_idle_timer();
 
     if (cell_index->row == 0) {
         weight_window_push();
@@ -80,6 +100,22 @@ static void select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *
         storage_save_settings();
         menu_layer_reload_data(menu_layer);
     } else if (cell_index->row == 6) {
+        static const float targets[] = {-1.0f, 0.00f, 0.02f, 0.04f, 0.05f, 0.06f, 0.07f, 0.08f};
+        int curr = 0;
+        for(int i=0; i<8; i++) { if (settings->target_bac >= targets[i] - 0.001f) curr = i; }
+        curr = (curr + 1) % 8;
+        settings->target_bac = targets[curr];
+        storage_save_settings();
+        menu_layer_reload_data(menu_layer);
+    } else if (cell_index->row == 7) {
+        static const uint8_t timeouts[] = {0, 1, 2, 5, 10, 15};
+        int curr = 0;
+        for(int i=0; i<6; i++) { if (settings->idle_timeout_mins == timeouts[i]) curr = i; }
+        curr = (curr + 1) % 6;
+        settings->idle_timeout_mins = timeouts[curr];
+        storage_save_settings();
+        menu_layer_reload_data(menu_layer);
+    } else if (cell_index->row == 8) {
         if (settings->theme_mode == THEME_MODE_LIGHT) settings->theme_mode = THEME_MODE_DARK;
         else if (settings->theme_mode == THEME_MODE_DARK) settings->theme_mode = THEME_MODE_AUTO;
         else settings->theme_mode = THEME_MODE_LIGHT;
@@ -89,10 +125,14 @@ static void select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *
         menu_layer_set_normal_colors(menu_layer, theme_bg(), theme_text());
         menu_layer_set_highlight_colors(menu_layer, theme_highlight_bg(), theme_highlight_text());
         menu_layer_reload_data(menu_layer);
-    } else if (cell_index->row == 7) {
+    } else if (cell_index->row == 9) {
         storage_clear_drinks();
         window_stack_pop(true);
     }
+}
+
+static void selection_changed_callback(struct MenuLayer *menu_layer, MenuIndex new_index, MenuIndex old_index, void *callback_context) {
+    app_reset_idle_timer();
 }
 
 static MenuLayerCallbacks s_settings_cbs = {
@@ -100,6 +140,7 @@ static MenuLayerCallbacks s_settings_cbs = {
     .get_cell_height = get_cell_height_callback,
     .draw_row = draw_row_callback,
     .select_click = select_callback,
+    .selection_changed = selection_changed_callback,
 };
 
 static void window_appear(Window *window) {
@@ -111,6 +152,7 @@ static void window_appear(Window *window) {
 
         touch_menu_subscribe(window, s_menu_layer, s_settings_cbs, NULL);
     }
+    app_reset_idle_timer();
 }
 
 static void window_disappear(Window *window) {

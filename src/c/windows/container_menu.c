@@ -7,6 +7,8 @@
 #include "../core/storage.h"
 #include "../core/touch_menu.h"
 
+extern void app_reset_idle_timer(void);
+
 typedef struct {
     const char *name;
     float volume_ml;
@@ -81,11 +83,10 @@ static void draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuIndex 
     else container = &s_wine_options[cell_index->row];
 
     AppSettings *settings = storage_get_settings();
-    float oz = container->volume_ml / 29.5735f;
+    float oz = (container->volume_ml / 29.5735f) + 0.05f;
     int oz_w = (int)oz;
     int oz_d = (int)(oz * 10.0f) % 10;
 
-    // Conditionally swap the placement of the units so the preferred system leads
     if (settings->use_metric_volume) {
         snprintf(subtitle, sizeof(subtitle), "%d ml (%d.%d oz)", (int)container->volume_ml, oz_w, oz_d);
     } else {
@@ -96,6 +97,7 @@ static void draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuIndex 
 }
 
 static void select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *data) {
+    app_reset_idle_timer();
     if (cell_index->section == 3) {
         custom_volume_window_push(355.0f, 5.0f);
         return;
@@ -114,6 +116,10 @@ static void select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *
     }
 }
 
+static void selection_changed_callback(struct MenuLayer *menu_layer, MenuIndex new_index, MenuIndex old_index, void *callback_context) {
+    app_reset_idle_timer();
+}
+
 static MenuLayerCallbacks s_menu_cbs = {
     .get_num_sections = get_num_sections_callback,
     .get_num_rows = get_num_rows_callback,
@@ -122,9 +128,11 @@ static MenuLayerCallbacks s_menu_cbs = {
     .draw_header = draw_header_callback,
     .draw_row = draw_row_callback,
     .select_click = select_callback,
+    .selection_changed = selection_changed_callback,
 };
 
 static void window_appear(Window *window) {
+    app_reset_idle_timer();
     if(s_menu_layer) {
         window_set_background_color(window, theme_bg());
         menu_layer_set_normal_colors(s_menu_layer, theme_bg(), theme_text());

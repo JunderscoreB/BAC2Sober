@@ -3,6 +3,8 @@
 #include "time_offset_menu.h"
 #include "../core/storage.h"
 
+extern void app_reset_idle_timer(void);
+
 static Window *s_window;
 static TextLayer *s_title_layer;
 static TextLayer *s_abv_layer;
@@ -24,18 +26,21 @@ static void update_abv_text(void) {
 }
 
 static void up_click_handler(ClickRecognizerRef recognizer, void *context) {
+    app_reset_idle_timer();
     s_current_abv += 0.1f;
     if (s_current_abv > 20.0f) s_current_abv = 20.0f;
     update_abv_text();
 }
 
 static void down_click_handler(ClickRecognizerRef recognizer, void *context) {
+    app_reset_idle_timer();
     if (s_current_abv > 0.1f) s_current_abv -= 0.1f;
     else s_current_abv = 0.0f;
     update_abv_text();
 }
 
 static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
+    app_reset_idle_timer();
     time_offset_menu_push(s_current_volume_ml, s_original_volume_ml, s_current_abv / 100.0f, s_shape);
 }
 
@@ -52,6 +57,7 @@ static int16_t s_touch_last_y = 0;
 static bool s_is_drag = false;
 
 static void touch_handler(const TouchEvent *event, void *context) {
+    app_reset_idle_timer();
     if (event->type == TouchEvent_Touchdown) {
         s_touch_start_x = event->x;
         s_touch_start_y = event->y;
@@ -89,6 +95,7 @@ static void touch_handler(const TouchEvent *event, void *context) {
 #endif
 
 static void window_appear(Window *window) {
+    app_reset_idle_timer();
     #ifdef PBL_TOUCH
     if (touch_service_is_enabled()) {
         touch_service_subscribe(touch_handler, NULL);

@@ -1,6 +1,8 @@
 #include <pebble.h>
 #include "touch_menu.h"
-#include "storage.h" // Needed to check wrist orientation preference
+#include "storage.h"
+
+extern void app_reset_idle_timer(void);
 
 #ifndef MENU_CELL_BASIC_CELL_HEIGHT
 #if defined(PBL_EMERY)
@@ -72,6 +74,7 @@ static void kinetic_timer_callback(void *data) {
 }
 
 static void menu_touch_handler(const TouchEvent *event, void *context) {
+    app_reset_idle_timer(); // Global touch intercept
     if (!s_menu) return;
     ScrollLayer *scroll_layer = menu_layer_get_scroll_layer(s_menu);
 
@@ -98,7 +101,6 @@ static void menu_touch_handler(const TouchEvent *event, void *context) {
         int16_t dx = event->x - s_touch_start_x;
         int16_t dy = event->y - s_touch_start_y;
 
-        // Check for horizontal back swipe priority before processing vertical taps or drags
         if (abs(dx) > 40 && abs(dx) > abs(dy)) {
             AppSettings *settings = storage_get_settings();
             bool is_back = settings->right_handed_mode ? (dx > 40) : (dx < -40);

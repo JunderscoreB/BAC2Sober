@@ -2,6 +2,8 @@
 #include "weight_window.h"
 #include "../core/storage.h"
 
+extern void app_reset_idle_timer(void);
+
 static Window *s_window;
 static TextLayer *s_title_layer;
 static TextLayer *s_weight_layer;
@@ -20,6 +22,7 @@ static void update_weight_text(void) {
 }
 
 static void up_click_handler(ClickRecognizerRef recognizer, void *context) {
+    app_reset_idle_timer();
     s_current_weight += 1.0f;
 
     if (s_is_metric && s_current_weight > 300.0f) s_current_weight = 300.0f;
@@ -29,6 +32,7 @@ static void up_click_handler(ClickRecognizerRef recognizer, void *context) {
 }
 
 static void down_click_handler(ClickRecognizerRef recognizer, void *context) {
+    app_reset_idle_timer();
     s_current_weight -= 1.0f;
 
     if (s_is_metric && s_current_weight < 30.0f) s_current_weight = 30.0f;
@@ -38,6 +42,7 @@ static void down_click_handler(ClickRecognizerRef recognizer, void *context) {
 }
 
 static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
+    app_reset_idle_timer();
     AppSettings *settings = storage_get_settings();
     settings->weight = s_current_weight;
     storage_save_settings();
@@ -58,6 +63,7 @@ static int16_t s_touch_last_y = 0;
 static bool s_is_drag = false;
 
 static void touch_handler(const TouchEvent *event, void *context) {
+    app_reset_idle_timer();
     if (event->type == TouchEvent_Touchdown) {
         s_touch_start_x = event->x;
         s_touch_start_y = event->y;
@@ -95,6 +101,7 @@ static void touch_handler(const TouchEvent *event, void *context) {
 #endif
 
 static void window_appear(Window *window) {
+    app_reset_idle_timer();
     #ifdef PBL_TOUCH
     if (touch_service_is_enabled()) {
         touch_service_subscribe(touch_handler, NULL);

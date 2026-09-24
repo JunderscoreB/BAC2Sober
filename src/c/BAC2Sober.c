@@ -6,8 +6,6 @@
 #include "windows/settings_menu.h"
 #include "windows/portion_menu.h"
 
-#define DROPOFF_DELAY_SECONDS (12 * 3600)
-
 typedef enum { EDIT_MODE_TIME, EDIT_MODE_ABV, EDIT_MODE_VOL } EditMode;
 
 static Window *s_main_window;
@@ -25,10 +23,18 @@ static TextLayer *s_value_edit_layer;
 static EditMode s_current_edit_mode;
 
 static float s_current_bac = 0.0f;
-static time_t s_sober_time = 0;
+static time_t s_zero_time = 0;   // The time when BAC will mathematically hit 0.00
+static time_t s_target_time = 0; // The time when BAC will hit the user's Timeline Target
+static time_t s_last_pushed_sober_time = 0;
+
+static time_t s_last_interaction_time = 0;
 
 static MenuLayerCallbacks s_main_menu_cbs;
 static MenuLayerCallbacks s_edit_menu_cbs;
+
+void app_reset_idle_timer(void) {
+    s_last_interaction_time = time(NULL);
+}
 
 static void sort_drinks(void) {
     int num_drinks = storage_get_num_drinks();
@@ -44,11 +50,25 @@ static void sort_drinks(void) {
     }
 }
 
+static void send_timeline_pin_update(time_t sober_timestamp, float target_bac) {
+    DictionaryIterator *iter;
+    AppMessageResult result = app_message_outbox_begin(&iter);
+    if (result == APP_MSG_OK) {
+        dict_write_uint32(iter, MESSAGE_KEY_SOBER_TIME, (uint32_t)sober_timestamp);
+        dict_write_uint32(iter, MESSAGE_KEY_TARGET_BAC, (uint32_t)(target_bac * 100.0f + 0.5f));
+        app_message_outbox_send();
+    }
+}
+
 static void update_bac_calculations(void) {
     int num_drinks = storage_get_num_drinks();
+
+    wakeup_cancel_all();
+
     if (num_drinks == 0) {
         s_current_bac = 0.0f;
-        s_sober_time = 0;
+        s_zero_time = 0;
+        s_target_time = 0;
         return;
     }
 
@@ -61,13 +81,35 @@ static void update_bac_calculations(void) {
 
     s_current_bac = calculate_current_bac(user, drinks, num_drinks, current_time);
 
+    // Calculate when the user hits 0.00 (used for the dashboard UI)
     if (s_current_bac > 0.0f) {
-        float hours_to_sober = s_current_bac / METABOLISM_RATE_PER_HOUR;
-        s_sober_time = current_time + (time_t)(hours_to_sober * 3600.0f);
+        float hours_to_zero = s_current_bac / METABOLISM_RATE_PER_HOUR;
+        s_zero_time = current_time + (time_t)(hours_to_zero * 3600.0f);
     } else {
         float bac_at_last_drink = calculate_current_bac(user, drinks, num_drinks, drinks[num_drinks-1].timestamp);
-        float hours_to_sober = bac_at_last_drink / METABOLISM_RATE_PER_HOUR;
-        s_sober_time = drinks[num_drinks-1].timestamp + (time_t)(hours_to_sober * 3600.0f);
+        float hours_to_zero = bac_at_last_drink / METABOLISM_RATE_PER_HOUR;
+        s_zero_time = drinks[num_drinks-1].timestamp + (time_t)(hours_to_zero * 3600.0f);
+    }
+
+    // Process optional wakeups and timeline pins based on the selected target
+    if (settings->target_bac >= 0.0f) {
+        if (s_current_bac > settings->target_bac) {
+            float hours_to_target = (s_current_bac - settings->target_bac) / METABOLISM_RATE_PER_HOUR;
+            s_target_time = current_time + (time_t)(hours_to_target * 3600.0f);
+
+            if (s_target_time > current_time) {
+                wakeup_schedule(s_target_time, 0, true);
+            }
+        } else {
+            s_target_time = 0;
+        }
+
+        if (s_target_time != s_last_pushed_sober_time && s_target_time > current_time) {
+            send_timeline_pin_update(s_target_time, settings->target_bac);
+            s_last_pushed_sober_time = s_target_time;
+        }
+    } else {
+        s_target_time = 0; // Timeline is disabled
     }
 }
 
@@ -77,7 +119,7 @@ static void cleanup_old_drinks(void) {
     update_bac_calculations();
     time_t now = time(NULL);
 
-    if (s_current_bac <= 0.0f && s_sober_time > 0 && now > (s_sober_time + DROPOFF_DELAY_SECONDS)) {
+    if (s_current_bac <= 0.0f && now >= s_zero_time) {
         storage_clear_drinks();
         update_bac_calculations();
     }
@@ -100,16 +142,35 @@ static void apply_theme_to_menu(Window *window, MenuLayer *menu) {
 static void update_dashboard_text(void) {
     static char s_bac_buffer[16];
     static char s_sober_buffer[32];
+    AppSettings *settings = storage_get_settings();
 
     int bac_whole = (int)s_current_bac;
     int bac_thousands = (int)(s_current_bac * 1000.0f) % 1000;
     snprintf(s_bac_buffer, sizeof(s_bac_buffer), "BAC: %d.%03d", bac_whole, bac_thousands);
 
-    if (s_current_bac > 0.0f) {
-        struct tm *sober_tm = localtime(&s_sober_time);
-        strftime(s_sober_buffer, sizeof(s_sober_buffer), "Sober by %H:%M", sober_tm);
+    // Choose what to display based on whether timeline targets are enabled
+    if (settings->target_bac >= 0.0f) {
+        if (s_target_time > 0) {
+            struct tm *sober_tm = localtime(&s_target_time);
+            if (sober_tm) {
+                if (settings->target_bac > 0.001f) {
+                    strftime(s_sober_buffer, sizeof(s_sober_buffer), "Target by %H:%M", sober_tm);
+                } else {
+                    strftime(s_sober_buffer, sizeof(s_sober_buffer), "Sober by %H:%M", sober_tm);
+                }
+            }
+        } else {
+            if (settings->target_bac > 0.001f) snprintf(s_sober_buffer, sizeof(s_sober_buffer), "Target Reached");
+            else snprintf(s_sober_buffer, sizeof(s_sober_buffer), "Sober");
+        }
     } else {
-        snprintf(s_sober_buffer, sizeof(s_sober_buffer), "Sober");
+        // Timeline disabled, strictly show time to 0.00%
+        if (s_zero_time > time(NULL)) {
+            struct tm *sober_tm = localtime(&s_zero_time);
+            if (sober_tm) strftime(s_sober_buffer, sizeof(s_sober_buffer), "Sober by %H:%M", sober_tm);
+        } else {
+            snprintf(s_sober_buffer, sizeof(s_sober_buffer), "Sober");
+        }
     }
 
     if (s_bac_layer) {
@@ -127,6 +188,16 @@ static void update_dashboard_text(void) {
 }
 
 static void tick_handler(struct tm *tick_time, TimeUnits units_changed) {
+    AppSettings *settings = storage_get_settings();
+
+    if (settings->idle_timeout_mins > 0 && s_last_interaction_time > 0) {
+        time_t now = time(NULL);
+        if (now - s_last_interaction_time >= (time_t)(settings->idle_timeout_mins * 60)) {
+            window_stack_pop_all(true);
+            return;
+        }
+    }
+
     cleanup_old_drinks();
     update_bac_calculations();
     update_dashboard_text();
@@ -138,26 +209,36 @@ static void tick_handler(struct tm *tick_time, TimeUnits units_changed) {
 }
 
 static void update_value_edit_text(void) {
-    static char s_val_buf[24];
+    static char s_val_buf[32];
     Drink *drinks = storage_get_drinks();
     Drink *d = &drinks[s_editing_drink_idx];
 
     if (s_current_edit_mode == EDIT_MODE_TIME) {
         struct tm *tick_time = localtime((time_t*)&d->timestamp);
-        strftime(s_val_buf, sizeof(s_val_buf), "%H:%M", tick_time);
+        if (tick_time) {
+            strftime(s_val_buf, sizeof(s_val_buf), "%H:%M", tick_time);
+        }
     } else if (s_current_edit_mode == EDIT_MODE_ABV) {
         int abv_tenths = (int)(d->abv * 1000.0f + 0.5f);
         int abv_whole = abv_tenths / 10;
         int abv_decimal = abv_tenths % 10;
         snprintf(s_val_buf, sizeof(s_val_buf), "%d.%d%%", abv_whole, abv_decimal);
     } else if (s_current_edit_mode == EDIT_MODE_VOL) {
-        float oz = d->volume_ml / 29.5735f;
-        snprintf(s_val_buf, sizeof(s_val_buf), "%dml (%d.%doz)", (int)d->volume_ml, (int)oz, (int)(oz * 10.0f) % 10);
+        AppSettings *settings = storage_get_settings();
+        float oz = (d->volume_ml / 29.5735f) + 0.05f;
+        int oz_w = (int)oz;
+        int oz_d = (int)(oz * 10.0f) % 10;
+        if (settings->use_metric_volume) {
+            snprintf(s_val_buf, sizeof(s_val_buf), "%dml (%d.%doz)", (int)d->volume_ml, oz_w, oz_d);
+        } else {
+            snprintf(s_val_buf, sizeof(s_val_buf), "%d.%doz (%dml)", oz_w, oz_d, (int)d->volume_ml);
+        }
     }
     text_layer_set_text(s_value_edit_layer, s_val_buf);
 }
 
 static void value_edit_up_click_handler(ClickRecognizerRef recognizer, void *context) {
+    app_reset_idle_timer();
     Drink *drinks = storage_get_drinks();
     Drink *d = &drinks[s_editing_drink_idx];
 
@@ -180,6 +261,7 @@ static void value_edit_up_click_handler(ClickRecognizerRef recognizer, void *con
 }
 
 static void value_edit_down_click_handler(ClickRecognizerRef recognizer, void *context) {
+    app_reset_idle_timer();
     Drink *drinks = storage_get_drinks();
     Drink *d = &drinks[s_editing_drink_idx];
 
@@ -201,6 +283,7 @@ static void value_edit_down_click_handler(ClickRecognizerRef recognizer, void *c
 }
 
 static void value_edit_select_click_handler(ClickRecognizerRef recognizer, void *context) {
+    app_reset_idle_timer();
     sort_drinks();
     storage_save_drinks(storage_get_drinks(), storage_get_num_drinks());
     window_stack_pop(true);
@@ -219,6 +302,8 @@ static int16_t s_ve_touch_last_y = 0;
 static bool s_ve_is_drag = false;
 
 static void value_edit_touch_handler(const TouchEvent *event, void *context) {
+    app_reset_idle_timer();
+
     if (event->type == TouchEvent_Touchdown) {
         s_ve_touch_start_x = event->x;
         s_ve_touch_start_y = event->y;
@@ -256,6 +341,7 @@ static void value_edit_touch_handler(const TouchEvent *event, void *context) {
 #endif
 
 static void value_edit_window_appear(Window *window) {
+    app_reset_idle_timer();
     #ifdef PBL_TOUCH
     if (touch_service_is_enabled()) {
         touch_service_subscribe(value_edit_touch_handler, NULL);
@@ -317,11 +403,14 @@ static void edit_draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuI
     Drink *drinks = storage_get_drinks();
     Drink *d = &drinks[s_editing_drink_idx];
     char subtitle[32];
+    AppSettings *settings = storage_get_settings();
 
     switch (cell_index->row) {
         case 0: {
             struct tm *tick_time = localtime((time_t*)&d->timestamp);
-            strftime(subtitle, sizeof(subtitle), "%H:%M", tick_time);
+            if (tick_time) {
+                strftime(subtitle, sizeof(subtitle), "%H:%M", tick_time);
+            }
             menu_cell_basic_draw(ctx, cell_layer, "Time Finished", subtitle, NULL);
             break;
         }
@@ -334,14 +423,27 @@ static void edit_draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuI
             break;
         }
         case 2: {
-            float oz = d->volume_ml / 29.5735f;
-            snprintf(subtitle, sizeof(subtitle), "%d ml (%d.%d oz)", (int)d->volume_ml, (int)oz, (int)(oz * 10.0f) % 10);
+            float oz = (d->volume_ml / 29.5735f) + 0.05f;
+            int oz_w = (int)oz;
+            int oz_d = (int)(oz * 10.0f) % 10;
+            if (settings->use_metric_volume) {
+                snprintf(subtitle, sizeof(subtitle), "%d ml (%d.%d oz)", (int)d->volume_ml, oz_w, oz_d);
+            } else {
+                snprintf(subtitle, sizeof(subtitle), "%d.%d oz (%d ml)", oz_w, oz_d, (int)d->volume_ml);
+            }
             menu_cell_basic_draw(ctx, cell_layer, "Edit Volume", subtitle, NULL);
             break;
         }
         case 3: {
             float max_vol = d->original_volume_ml > 0 ? d->original_volume_ml : d->volume_ml;
-            snprintf(subtitle, sizeof(subtitle), "Out of %d ml container", (int)max_vol);
+            float oz = (max_vol / 29.5735f) + 0.05f;
+            int oz_w = (int)oz;
+            int oz_d = (int)(oz * 10.0f) % 10;
+            if (settings->use_metric_volume) {
+                snprintf(subtitle, sizeof(subtitle), "Out of %d ml container", (int)max_vol);
+            } else {
+                snprintf(subtitle, sizeof(subtitle), "Out of %d.%d oz container", oz_w, oz_d);
+            }
             menu_cell_basic_draw(ctx, cell_layer, "Edit Portion", subtitle, NULL);
             break;
         }
@@ -352,6 +454,7 @@ static void edit_draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuI
 }
 
 static void edit_select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *data) {
+    app_reset_idle_timer();
     Drink *drinks = storage_get_drinks();
     int num_drinks = storage_get_num_drinks();
     Drink *d = &drinks[s_editing_drink_idx];
@@ -392,14 +495,21 @@ static void edit_select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, v
     }
 }
 
+// Hook into Up/Down scroll events to reset timer
+static void edit_selection_changed_callback(struct MenuLayer *menu_layer, MenuIndex new_index, MenuIndex old_index, void *callback_context) {
+    app_reset_idle_timer();
+}
+
 static MenuLayerCallbacks s_edit_menu_cbs = {
     .get_num_rows = edit_get_num_rows_callback,
     .get_cell_height = edit_get_cell_height_callback,
     .draw_row = edit_draw_row_callback,
     .select_click = edit_select_callback,
+    .selection_changed = edit_selection_changed_callback,
 };
 
 static void edit_window_appear(Window *window) {
+    app_reset_idle_timer();
     if (s_edit_menu_layer) {
         apply_theme_to_menu(window, s_edit_menu_layer);
         menu_layer_reload_data(s_edit_menu_layer);
@@ -465,16 +575,26 @@ static void main_draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuI
         Drink *d = &drinks[cell_index->row];
         char title[32];
         char subtitle[32];
+        AppSettings *settings = storage_get_settings();
 
         struct tm *tick_time = localtime((time_t*)&d->timestamp);
-        strftime(title, sizeof(title), "%H:%M", tick_time);
+        if (tick_time) {
+            strftime(title, sizeof(title), "%H:%M", tick_time);
+        }
 
         int abv_tenths = (int)(d->abv * 1000.0f + 0.5f);
         int abv_whole = abv_tenths / 10;
         int abv_decimal = abv_tenths % 10;
 
-        float oz = d->volume_ml / 29.5735f;
-        snprintf(subtitle, sizeof(subtitle), "%dml (%d.%doz) | %d.%d%%", (int)d->volume_ml, (int)oz, (int)(oz * 10.0f) % 10, abv_whole, abv_decimal);
+        float oz = (d->volume_ml / 29.5735f) + 0.05f;
+        int oz_w = (int)oz;
+        int oz_d = (int)(oz * 10.0f) % 10;
+
+        if (settings->use_metric_volume) {
+            snprintf(subtitle, sizeof(subtitle), "%dml (%d.%doz) | %d.%d%%", (int)d->volume_ml, oz_w, oz_d, abv_whole, abv_decimal);
+        } else {
+            snprintf(subtitle, sizeof(subtitle), "%d.%doz (%dml) | %d.%d%%", oz_w, oz_d, (int)d->volume_ml, abv_whole, abv_decimal);
+        }
 
         menu_cell_basic_draw(ctx, cell_layer, title, subtitle, NULL);
     }
@@ -489,6 +609,7 @@ static void main_draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuI
 }
 
 static void main_select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *data) {
+    app_reset_idle_timer();
     if (cell_index->section == 0) {
         container_menu_push();
     } else if (cell_index->section == 1) {
@@ -508,6 +629,10 @@ static void main_select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, v
     }
 }
 
+static void main_selection_changed_callback(struct MenuLayer *menu_layer, MenuIndex new_index, MenuIndex old_index, void *callback_context) {
+    app_reset_idle_timer();
+}
+
 static MenuLayerCallbacks s_main_menu_cbs = {
     .get_num_sections = main_get_num_sections_callback,
     .get_num_rows = main_get_num_rows_callback,
@@ -516,6 +641,7 @@ static MenuLayerCallbacks s_main_menu_cbs = {
     .draw_header = main_draw_header_callback,
     .draw_row = main_draw_row_callback,
     .select_click = main_select_callback,
+    .selection_changed = main_selection_changed_callback,
 };
 
 static void main_window_load(Window *window) {
@@ -544,6 +670,7 @@ static void main_window_load(Window *window) {
 }
 
 static void main_window_appear(Window *window) {
+    app_reset_idle_timer();
     cleanup_old_drinks();
     update_bac_calculations();
     update_dashboard_text();
@@ -572,6 +699,8 @@ static void init(void) {
 
     storage_load_settings();
     storage_load_drinks(drinks, &num_drinks);
+
+    app_message_open(APP_MESSAGE_INBOX_SIZE_MINIMUM, APP_MESSAGE_OUTBOX_SIZE_MINIMUM);
 
     tick_timer_service_subscribe(MINUTE_UNIT, tick_handler);
 

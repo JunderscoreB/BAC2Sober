@@ -4,11 +4,13 @@ BAC2Sober is a native, open-source C application for PebbleOS smartwatches that 
 
 ## Features
 - **Dynamic Widmark Calculations:** Real-time BAC tracking and a live "Sober By" clock that updates every minute.
+- **Timeline Integration:** Optionally push a notification pin to your Pebble Timeline when you mathematically hit a specific Target BAC (e.g., 0.05% or 0.00%).
 - **Vector Container Graphics:** Beautiful, memory-efficient `GPath` vector silhouettes of common drink containers (Cans, Bottles, Wine Glasses, Growlers, Pints, and **Shots**) with dynamic liquid filling.
 - **Full Touch Support:** Native touchscreen integration for the Pebble Time 2 (Emery platform). Use kinetic scrolling through your drink logs and intuitive swipe-and-tap gestures to dial in volumes and ABVs. Includes a graceful fallback to physical buttons on legacy, non-touch hardware using the system's touch service detection.
 - **Customizable User Profiles:** Supports precise weight entry in both Kilograms (kg) and Pounds (lbs).
 - **Theme Engine:** Built-in Light, Dark, and **Auto** (switches based on 6 PM - 6 AM local time) modes with vibrant UI highlights on color displays.
-- **Historical Log:** Review, edit (Time, Volume, ABV), or delete previous drinks on the fly. The log resets after 12 hours of 0.00 BAC. 
+- **Historical Log:** Review, edit (Time, Volume, ABV), or delete previous drinks on the fly. The log clears exactly when 0.00 BAC is reached.
+- **Idle Timeout:** Configure the app to automatically close and return to your watchface after a specified period of inactivity.
 
 ## Compatibility
 Built against the modern [Core Devices PebbleOS SDK](https://github.com/coredevices/PebbleOS). Fully compatible with:
@@ -24,9 +26,9 @@ This project utilizes the standard Pebble `waf` build system.
 1. Ensure you have the Pebble SDK installed and configured.
 2. Clone this repository:
    ```bash
-   git clone [https://github.com/username/BAC2Sober.git](https://github.com/username/BAC2Sober.git)
+   git clone [https://github.com/JunderscoreB/BAC2Sober.git](https://github.com/JunderscoreB/BAC2Sober.git)
    cd BAC2Sober
-   ```
+
 3. Build the `pbw` binary:
    ```bash
    pebble build

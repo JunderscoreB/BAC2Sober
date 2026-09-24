@@ -22,14 +22,7 @@ typedef struct {
     float gender_constant;
 } UserProfile;
 
-// Legacy structure for migrating existing saves
-typedef struct {
-    time_t timestamp;
-    float volume_ml;
-    float abv;
-} OldDrink;
-
-// Expanded structure to remember container types
+// Current memory structure (20 bytes)
 typedef struct {
     time_t timestamp;
     float volume_ml;

@@ -3,6 +3,8 @@
 #include "../core/storage.h"
 #include "../core/touch_menu.h"
 
+extern void app_reset_idle_timer(void);
+
 static Window *s_window;
 static MenuLayer *s_menu_layer;
 static float s_current_volume_ml;
@@ -10,7 +12,6 @@ static float s_original_volume_ml;
 static float s_current_abv;
 static DrinkShape s_shape;
 
-// External declarations so we can wipe the wizard backstack cleanly
 extern void container_menu_destroy_safe(void);
 extern void custom_volume_window_destroy_safe(void);
 extern void portion_menu_destroy_safe(void);
@@ -36,6 +37,7 @@ static void draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuIndex 
 }
 
 static void select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *data) {
+    app_reset_idle_timer();
     time_t timestamp = time(NULL);
     switch (cell_index->row) {
         case 1: timestamp -= 5 * 60; break;
@@ -54,14 +56,15 @@ static void select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *
     };
     storage_add_drink(new_drink);
 
-    // Silently remove the entire wizard flow from the window stack underneath us
     container_menu_destroy_safe();
     custom_volume_window_destroy_safe();
     portion_menu_destroy_safe();
     abv_window_destroy_safe();
-
-    // Now simply popping this window reveals the main dashboard!
     window_stack_pop(true);
+}
+
+static void selection_changed_callback(struct MenuLayer *menu_layer, MenuIndex new_index, MenuIndex old_index, void *callback_context) {
+    app_reset_idle_timer();
 }
 
 static MenuLayerCallbacks s_menu_cbs = {
@@ -69,15 +72,17 @@ static MenuLayerCallbacks s_menu_cbs = {
     .get_cell_height = get_cell_height_callback,
     .draw_row = draw_row_callback,
     .select_click = select_callback,
+    .selection_changed = selection_changed_callback,
 };
 
 static void window_appear(Window *window) {
+    app_reset_idle_timer();
     if(s_menu_layer) {
         window_set_background_color(window, theme_bg());
         menu_layer_set_normal_colors(s_menu_layer, theme_bg(), theme_text());
         menu_layer_set_highlight_colors(s_menu_layer, theme_highlight_bg(), theme_highlight_text());
         menu_layer_reload_data(s_menu_layer);
-        
+
         touch_menu_subscribe(window, s_menu_layer, s_menu_cbs, NULL);
     }
 }
@@ -91,7 +96,7 @@ static void window_load(Window *window) {
     GRect bounds = layer_get_bounds(window_layer);
 
     s_menu_layer = menu_layer_create(bounds);
-    
+
     window_set_background_color(window, theme_bg());
     menu_layer_set_normal_colors(s_menu_layer, theme_bg(), theme_text());
     menu_layer_set_highlight_colors(s_menu_layer, theme_highlight_bg(), theme_highlight_text());

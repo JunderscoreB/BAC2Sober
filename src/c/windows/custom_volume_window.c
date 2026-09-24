@@ -3,6 +3,8 @@
 #include "abv_window.h"
 #include "../core/storage.h"
 
+extern void app_reset_idle_timer(void);
+
 static Window *s_window;
 static TextLayer *s_title_layer;
 static TextLayer *s_volume_layer;
@@ -11,30 +13,37 @@ static float s_current_volume = 355.0f;
 static float s_default_abv = 5.0f;
 
 static void update_volume_text(void) {
-    static char s_buffer[16];
+    static char s_buffer[24];
     AppSettings *settings = storage_get_settings();
+
+    float oz = (s_current_volume / 29.5735f) + 0.05f;
+    int oz_w = (int)oz;
+    int oz_d = (int)(oz * 10.0f) % 10;
+
     if (settings->use_metric_volume) {
-        snprintf(s_buffer, sizeof(s_buffer), "%dml", (int)s_current_volume);
+        snprintf(s_buffer, sizeof(s_buffer), "%d ml", (int)s_current_volume);
     } else {
-        float oz = s_current_volume / 29.5735f;
-        snprintf(s_buffer, sizeof(s_buffer), "%d.%doz", (int)oz, (int)(oz * 10.0f) % 10);
+        snprintf(s_buffer, sizeof(s_buffer), "%d.%d oz", oz_w, oz_d);
     }
     text_layer_set_text(s_volume_layer, s_buffer);
 }
 
 static void up_click_handler(ClickRecognizerRef recognizer, void *context) {
+    app_reset_idle_timer();
     s_current_volume += 10.0f;
     if (s_current_volume > 5000.0f) s_current_volume = 5000.0f;
     update_volume_text();
 }
 
 static void down_click_handler(ClickRecognizerRef recognizer, void *context) {
+    app_reset_idle_timer();
     s_current_volume -= 10.0f;
     if (s_current_volume < 10.0f) s_current_volume = 10.0f;
     update_volume_text();
 }
 
 static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
+    app_reset_idle_timer();
     abv_window_push(s_current_volume, s_current_volume, s_default_abv, SHAPE_CUSTOM);
 }
 
@@ -51,6 +60,7 @@ static int16_t s_touch_last_y = 0;
 static bool s_is_drag = false;
 
 static void touch_handler(const TouchEvent *event, void *context) {
+    app_reset_idle_timer();
     if (event->type == TouchEvent_Touchdown) {
         s_touch_start_x = event->x;
         s_touch_start_y = event->y;
@@ -88,6 +98,7 @@ static void touch_handler(const TouchEvent *event, void *context) {
 #endif
 
 static void window_appear(Window *window) {
+    app_reset_idle_timer();
     #ifdef PBL_TOUCH
     if (touch_service_is_enabled()) touch_service_subscribe(touch_handler, NULL);
     #endif

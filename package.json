@@ -1,7 +1,7 @@
 {
   "name": "BAC2Sober",
   "author": "J_B",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "keywords": [
     "pebble-app"
   ],
@@ -25,7 +25,8 @@
       "watchface": false
     },
     "messageKeys": [
-      "dummy"
+      "SOBER_TIME",
+      "TARGET_BAC"
     ],
     "resources": {
       "media": [
