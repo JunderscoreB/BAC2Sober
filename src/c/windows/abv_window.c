@@ -25,22 +25,53 @@ static void update_abv_text(void) {
     text_layer_set_text(s_abv_layer, s_buffer);
 }
 
+#ifdef PBL_TOUCH
+static uint16_t s_touch_repeat_count = 0;
+#endif
+
 static void up_click_handler(ClickRecognizerRef recognizer, void *context) {
     app_reset_idle_timer();
-    s_current_abv += 0.1f;
-    if (s_current_abv > 20.0f) s_current_abv = 20.0f;
+
+    uint16_t repeats = 0;
+    if (recognizer) repeats = click_number_of_clicks_counted(recognizer);
+    #ifdef PBL_TOUCH
+    else repeats = s_touch_repeat_count;
+    #endif
+
+    float step = (repeats > 15) ? 1.0f : 0.1f;
+    s_current_abv += step;
+
+    if (s_current_abv > 75.0f) s_current_abv = 75.0f;
     update_abv_text();
 }
 
 static void down_click_handler(ClickRecognizerRef recognizer, void *context) {
     app_reset_idle_timer();
-    if (s_current_abv > 0.1f) s_current_abv -= 0.1f;
+
+    uint16_t repeats = 0;
+    if (recognizer) repeats = click_number_of_clicks_counted(recognizer);
+    #ifdef PBL_TOUCH
+    else repeats = s_touch_repeat_count;
+    #endif
+
+    float step = (repeats > 15) ? 1.0f : 0.1f;
+    if (s_current_abv > step) s_current_abv -= step;
     else s_current_abv = 0.0f;
+
     update_abv_text();
 }
 
 static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
     app_reset_idle_timer();
+
+    // Save the custom drink parameters so "Repeat Last" works next time
+    if (s_shape == SHAPE_CUSTOM) {
+        AppSettings *settings = storage_get_settings();
+        settings->last_custom_volume_ml = s_current_volume_ml;
+        settings->last_custom_abv = s_current_abv;
+        storage_save_settings();
+    }
+
     time_offset_menu_push(s_current_volume_ml, s_original_volume_ml, s_current_abv / 100.0f, s_shape);
 }
 
@@ -62,6 +93,7 @@ static void touch_handler(const TouchEvent *event, void *context) {
         s_touch_start_x = event->x;
         s_touch_start_y = event->y;
         s_touch_last_y = event->y;
+        s_touch_repeat_count = 0;
         s_is_drag = false;
     } else if (event->type == TouchEvent_PositionUpdate) {
         if (!s_is_drag && abs(event->y - s_touch_start_y) > 10) s_is_drag = true;
@@ -69,9 +101,11 @@ static void touch_handler(const TouchEvent *event, void *context) {
         if (s_is_drag) {
             int16_t delta = event->y - s_touch_last_y;
             if (delta < -15) {
+                s_touch_repeat_count++;
                 up_click_handler(NULL, NULL);
                 s_touch_last_y = event->y;
             } else if (delta > 15) {
+                s_touch_repeat_count++;
                 down_click_handler(NULL, NULL);
                 s_touch_last_y = event->y;
             }

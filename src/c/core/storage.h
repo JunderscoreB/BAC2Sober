@@ -8,6 +8,11 @@ typedef uint8_t ThemeMode;
 #define THEME_MODE_DARK  1
 #define THEME_MODE_AUTO  2
 
+#define REGION_NA 0
+#define REGION_UK 1
+#define REGION_EU 2
+#define REGION_AU 3
+
 typedef struct {
     float weight;
     float gender_constant;
@@ -18,7 +23,10 @@ typedef struct {
     bool right_handed_mode;
     uint8_t idle_timeout_mins;
     float target_bac;
-    bool auto_exit; // Restored: Toggle to close the app after logging
+    bool auto_exit;
+    uint8_t region;
+    float last_custom_volume_ml; // NEW
+    float last_custom_abv;       // NEW
 } AppSettings;
 
 void storage_load_drinks(Drink* drinks, int* num_drinks);

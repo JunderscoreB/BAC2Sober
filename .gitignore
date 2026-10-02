@@ -11,6 +11,9 @@ waf
 venv/
 __pycache__/
 
+# other
+ignore/
+
 # OS Generated Files
 .DS_Store
 Thumbs.db

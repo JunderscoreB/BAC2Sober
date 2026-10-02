@@ -4,6 +4,8 @@
 #include "../core/storage.h"
 #include "../core/touch_menu.h"
 
+extern void app_reset_idle_timer(void);
+
 static const float s_volume_steps_pct[] = {
     10.0f, 20.0f, 25.0f, 30.0f, 33.3333f, 40.0f, 50.0f,
     60.0f, 66.6667f, 70.0f, 75.0f, 80.0f, 90.0f, 100.0f
@@ -24,14 +26,16 @@ static int s_edit_drink_idx = -1;
 static void update_text_layer(void) {
     static char s_buffer[32];
     AppSettings *settings = storage_get_settings();
-
     int percent = (int)(s_volume_steps_pct[s_current_step_idx] + 0.5f);
 
+    float oz = (s_current_volume_ml / 29.5735f) + 0.05f;
+    int oz_w = (int)oz;
+    int oz_d = (int)(oz * 10.0f) % 10;
+
     if (settings->use_metric_volume) {
-        snprintf(s_buffer, sizeof(s_buffer), "%d%% - %dml", percent, (int)(s_current_volume_ml + 0.5f));
+        snprintf(s_buffer, sizeof(s_buffer), "%d%% - %d ml", percent, (int)(s_current_volume_ml + 0.5f));
     } else {
-        float oz = s_current_volume_ml / 29.5735f;
-        snprintf(s_buffer, sizeof(s_buffer), "%d%% - %d.%doz", percent, (int)oz, (int)(oz * 10.0f) % 10);
+        snprintf(s_buffer, sizeof(s_buffer), "%d%% - %d.%d oz", percent, oz_w, oz_d);
     }
     text_layer_set_text(s_portion_text_layer, s_buffer);
 }
@@ -39,11 +43,16 @@ static void update_text_layer(void) {
 static void canvas_update_proc(Layer *layer, GContext *ctx) {
     GRect bounds = layer_get_bounds(layer);
     int cx = bounds.size.w / 2;
-    int cy = (bounds.size.h - 40) / 2;
+    int cy = PBL_IF_ROUND_ELSE((bounds.size.h / 2) - 20, (bounds.size.h - 40) / 2);
+
     float fill_ratio = s_current_volume_ml / s_max_volume_ml;
 
-    bool is_wine = (s_shape == SHAPE_WINE_GLASS || s_shape == SHAPE_WINE_BOTTLE);
-    GColor liquid_color = PBL_IF_COLOR_ELSE(is_wine ? GColorDarkCandyAppleRed : (s_shape == SHAPE_SHOT ? GColorRajah : GColorChromeYellow), theme_text());
+    GColor liquid_color;
+    #if defined(PBL_COLOR)
+    liquid_color = (s_shape == SHAPE_WINE_GLASS || s_shape == SHAPE_WINE_BOTTLE) ? GColorDarkCandyAppleRed : (s_shape == SHAPE_SHOT ? GColorRajah : GColorChromeYellow);
+    #else
+    liquid_color = theme_text();
+    #endif
     GColor glass_color = theme_text();
 
     static const GPoint s_can_pts[] = {{5,0}, {55,0}, {60,10}, {60,90}, {55,100}, {5,100}, {0,90}, {0,10}};
@@ -70,25 +79,68 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
     else if (s_shape == SHAPE_SHOT) { h = 50; w = 48; pts = s_shot_pts; num_pts = 4; }
     else { h = 100; w = 60; pts = s_can_pts; num_pts = 8; }
 
+    int scale_n = 1, scale_d = 1;
+
+    #if defined(PBL_ROUND)
+    scale_n = 2; scale_d = 3;
+    #else
+    if (bounds.size.h <= 168) {
+        if (s_shape == SHAPE_WINE_BOTTLE || s_shape == SHAPE_BOTTLE || s_shape == SHAPE_TALLBOY || s_shape == SHAPE_WINE_GLASS) {
+            scale_n = 3; scale_d = 4;
+        }
+    }
+    #endif
+
+    GPoint scaled_pts[16];
+    for (int i = 0; i < num_pts; i++) {
+        scaled_pts[i].x = (pts[i].x * scale_n) / scale_d;
+        scaled_pts[i].y = (pts[i].y * scale_n) / scale_d;
+    }
+
+    GPathInfo path_info = { .num_points = num_pts, .points = scaled_pts };
+
+    h = (h * scale_n) / scale_d;
+    w = (w * scale_n) / scale_d;
+    neck_h = (neck_h * scale_n) / scale_d;
+    body_h = (body_h * scale_n) / scale_d;
+
+    GPath *path = gpath_create(&path_info);
+
     int y_offset = cy - h/2;
     if (s_shape == SHAPE_WINE_BOTTLE || s_shape == SHAPE_BOTTLE) {
-        y_offset += 10;
+        y_offset += PBL_IF_ROUND_ELSE(5, 10);
     }
 
     if (s_shape == SHAPE_PINT) {
         graphics_context_set_fill_color(ctx, glass_color);
-        graphics_fill_rect(ctx, GRect(cx + 20, y_offset + 20, 30, 60), 12, GCornersAll);
+        int rx = (20 * scale_n) / scale_d;
+        int ry = (20 * scale_n) / scale_d;
+        int rw = (30 * scale_n) / scale_d;
+        int rh = (60 * scale_n) / scale_d;
+        graphics_fill_rect(ctx, GRect(cx + rx, y_offset + ry, rw, rh), 12, GCornersAll);
+
         graphics_context_set_fill_color(ctx, theme_bg());
-        graphics_fill_rect(ctx, GRect(cx + 24, y_offset + 24, 22, 52), 8, GCornersAll);
+        int bx = (24 * scale_n) / scale_d;
+        int by = (24 * scale_n) / scale_d;
+        int bw = (22 * scale_n) / scale_d;
+        int bh = (52 * scale_n) / scale_d;
+        graphics_fill_rect(ctx, GRect(cx + bx, y_offset + by, bw, bh), 8, GCornersAll);
     } else if (s_shape == SHAPE_GROWLER) {
         graphics_context_set_fill_color(ctx, glass_color);
-        graphics_fill_rect(ctx, GRect(cx + 25, y_offset + 15, 25, 40), 10, GCornersAll);
+        int rx = (25 * scale_n) / scale_d;
+        int ry = (15 * scale_n) / scale_d;
+        int rw = (25 * scale_n) / scale_d;
+        int rh = (40 * scale_n) / scale_d;
+        graphics_fill_rect(ctx, GRect(cx + rx, y_offset + ry, rw, rh), 10, GCornersAll);
+
         graphics_context_set_fill_color(ctx, theme_bg());
-        graphics_fill_rect(ctx, GRect(cx + 29, y_offset + 19, 17, 32), 6, GCornersAll);
+        int bx = (29 * scale_n) / scale_d;
+        int by = (19 * scale_n) / scale_d;
+        int bw = (17 * scale_n) / scale_d;
+        int bh = (32 * scale_n) / scale_d;
+        graphics_fill_rect(ctx, GRect(cx + bx, y_offset + by, bw, bh), 6, GCornersAll);
     }
 
-    GPathInfo path_info = { .num_points = num_pts, .points = (GPoint*)pts };
-    GPath *path = gpath_create(&path_info);
     gpath_move_to(path, GPoint(cx - w/2, y_offset));
 
     graphics_context_set_fill_color(ctx, liquid_color);
@@ -115,8 +167,18 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
 
     if (s_shape == SHAPE_WINE_GLASS) {
         graphics_context_set_fill_color(ctx, glass_color);
-        graphics_fill_rect(ctx, GRect(cx - 2, y_offset + 70, 4, 40), 0, GCornerNone);
-        graphics_fill_rect(ctx, GRect(cx - 15, y_offset + 106, 30, 4), 2, GCornersAll);
+        int stem_y = (70 * scale_n) / scale_d;
+        int stem_h = (40 * scale_n) / scale_d;
+        int base_x = (15 * scale_n) / scale_d;
+        int base_y = (106 * scale_n) / scale_d;
+        int base_w = (30 * scale_n) / scale_d;
+        int base_h = (4 * scale_n) / scale_d;
+
+        int stem_w = (4 * scale_n) / scale_d;
+        if (stem_w < 2) stem_w = 2;
+
+        graphics_fill_rect(ctx, GRect(cx - (stem_w/2), y_offset + stem_y, stem_w, stem_h), 0, GCornerNone);
+        graphics_fill_rect(ctx, GRect(cx - base_x, y_offset + base_y, base_w, base_h), 2, GCornersAll);
     }
 
     graphics_context_set_stroke_color(ctx, glass_color);
@@ -125,11 +187,11 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
 
     graphics_context_set_stroke_width(ctx, 1);
     if (s_shape == SHAPE_CAN || s_shape == SHAPE_TALLBOY || s_shape == SHAPE_CUSTOM) {
-        graphics_draw_line(ctx, GPoint(cx - w/2 + 5, y_offset), GPoint(cx + w/2 - 5, y_offset));
+        graphics_draw_line(ctx, GPoint(cx - w/2 + PBL_IF_ROUND_ELSE(3, 5), y_offset), GPoint(cx + w/2 - PBL_IF_ROUND_ELSE(3, 5), y_offset));
     } else if (s_shape == SHAPE_BOTTLE || s_shape == SHAPE_WINE_BOTTLE) {
-        graphics_draw_line(ctx, GPoint(cx - 7, y_offset), GPoint(cx + 7, y_offset));
+        graphics_draw_line(ctx, GPoint(cx - PBL_IF_ROUND_ELSE(5, 7), y_offset), GPoint(cx + PBL_IF_ROUND_ELSE(5, 7), y_offset));
     } else if (s_shape == SHAPE_GROWLER) {
-        graphics_draw_line(ctx, GPoint(cx - 10, y_offset), GPoint(cx + 10, y_offset));
+        graphics_draw_line(ctx, GPoint(cx - PBL_IF_ROUND_ELSE(7, 10), y_offset), GPoint(cx + PBL_IF_ROUND_ELSE(7, 10), y_offset));
     } else if (s_shape == SHAPE_SHOT) {
         graphics_draw_line(ctx, GPoint(cx - w/2, y_offset), GPoint(cx + w/2, y_offset));
     }
@@ -138,6 +200,7 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
 }
 
 static void up_click_handler(ClickRecognizerRef recognizer, void *context) {
+    app_reset_idle_timer();
     if (s_current_step_idx < (int)NUM_VOLUME_STEPS - 1) {
         s_current_step_idx++;
         s_current_volume_ml = s_max_volume_ml * (s_volume_steps_pct[s_current_step_idx] / 100.0f);
@@ -147,6 +210,7 @@ static void up_click_handler(ClickRecognizerRef recognizer, void *context) {
 }
 
 static void down_click_handler(ClickRecognizerRef recognizer, void *context) {
+    app_reset_idle_timer();
     if (s_current_step_idx > 0) {
         s_current_step_idx--;
         s_current_volume_ml = s_max_volume_ml * (s_volume_steps_pct[s_current_step_idx] / 100.0f);
@@ -156,6 +220,7 @@ static void down_click_handler(ClickRecognizerRef recognizer, void *context) {
 }
 
 static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
+    app_reset_idle_timer();
     if (s_edit_drink_idx >= 0) {
         Drink *drinks = storage_get_drinks();
         drinks[s_edit_drink_idx].volume_ml = s_current_volume_ml;
@@ -172,13 +237,14 @@ static void click_config_provider(void *context) {
     window_single_click_subscribe(BUTTON_ID_SELECT, select_click_handler);
 }
 
-#ifdef PBL_TOUCH
+#if defined(PBL_TOUCH)
 static int16_t s_touch_start_x = 0;
 static int16_t s_touch_start_y = 0;
 static int16_t s_touch_last_y = 0;
 static bool s_is_drag = false;
 
 static void touch_handler(const TouchEvent *event, void *context) {
+    app_reset_idle_timer();
     if (event->type == TouchEvent_Touchdown) {
         s_touch_start_x = event->x;
         s_touch_start_y = event->y;
@@ -216,7 +282,8 @@ static void touch_handler(const TouchEvent *event, void *context) {
 #endif
 
 static void window_appear(Window *window) {
-    #ifdef PBL_TOUCH
+    app_reset_idle_timer();
+    #if defined(PBL_TOUCH)
     if (touch_service_is_enabled()) {
         touch_service_subscribe(touch_handler, NULL);
     }
@@ -224,7 +291,7 @@ static void window_appear(Window *window) {
 }
 
 static void window_disappear(Window *window) {
-    #ifdef PBL_TOUCH
+    #if defined(PBL_TOUCH)
     if (touch_service_is_enabled()) {
         touch_service_unsubscribe();
     }
@@ -241,7 +308,8 @@ static void window_load(Window *window) {
     layer_set_update_proc(s_canvas_layer, canvas_update_proc);
     layer_add_child(window_layer, s_canvas_layer);
 
-    s_portion_text_layer = text_layer_create(GRect(0, bounds.size.h - 40, bounds.size.w, 30));
+    int text_y = PBL_IF_ROUND_ELSE((bounds.size.h / 2) + 30, bounds.size.h - 40);
+    s_portion_text_layer = text_layer_create(GRect(0, text_y, bounds.size.w, 30));
     text_layer_set_font(s_portion_text_layer, fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD));
     text_layer_set_text_alignment(s_portion_text_layer, GTextAlignmentCenter);
     text_layer_set_background_color(s_portion_text_layer, GColorClear);

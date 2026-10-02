@@ -5,6 +5,7 @@
 #include "windows/container_menu.h"
 #include "windows/settings_menu.h"
 #include "windows/portion_menu.h"
+#include "windows/big_time_window.h"
 
 typedef enum { EDIT_MODE_TIME, EDIT_MODE_ABV, EDIT_MODE_VOL } EditMode;
 
@@ -12,6 +13,9 @@ static Window *s_main_window;
 static MenuLayer *s_menu_layer;
 static TextLayer *s_bac_layer;
 static TextLayer *s_sober_layer;
+
+// Universally defined so we can use it on both round and rectangular screens
+static TextLayer *s_bac_title_layer;
 
 static Window *s_edit_window;
 static MenuLayer *s_edit_menu_layer;
@@ -23,14 +27,18 @@ static TextLayer *s_value_edit_layer;
 static EditMode s_current_edit_mode;
 
 static float s_current_bac = 0.0f;
-static time_t s_zero_time = 0;   // The time when BAC will mathematically hit 0.00
-static time_t s_target_time = 0; // The time when BAC will hit the user's Timeline Target
+static time_t s_zero_time = 0;
+static time_t s_target_time = 0;
 static time_t s_last_pushed_sober_time = 0;
 
 static time_t s_last_interaction_time = 0;
 
 static MenuLayerCallbacks s_main_menu_cbs;
 static MenuLayerCallbacks s_edit_menu_cbs;
+
+Window* main_window_get_window(void) {
+    return s_main_window;
+}
 
 void app_reset_idle_timer(void) {
     s_last_interaction_time = time(NULL);
@@ -81,7 +89,6 @@ static void update_bac_calculations(void) {
 
     s_current_bac = calculate_current_bac(user, drinks, num_drinks, current_time);
 
-    // Calculate when the user hits 0.00 (used for the dashboard UI)
     if (s_current_bac > 0.0f) {
         float hours_to_zero = s_current_bac / METABOLISM_RATE_PER_HOUR;
         s_zero_time = current_time + (time_t)(hours_to_zero * 3600.0f);
@@ -91,7 +98,6 @@ static void update_bac_calculations(void) {
         s_zero_time = drinks[num_drinks-1].timestamp + (time_t)(hours_to_zero * 3600.0f);
     }
 
-    // Process optional wakeups and timeline pins based on the selected target
     if (settings->target_bac >= 0.0f) {
         if (s_current_bac > settings->target_bac) {
             float hours_to_target = (s_current_bac - settings->target_bac) / METABOLISM_RATE_PER_HOUR;
@@ -109,7 +115,7 @@ static void update_bac_calculations(void) {
             s_last_pushed_sober_time = s_target_time;
         }
     } else {
-        s_target_time = 0; // Timeline is disabled
+        s_target_time = 0;
     }
 }
 
@@ -125,6 +131,7 @@ static void cleanup_old_drinks(void) {
     }
 }
 
+#if !defined(PBL_PLATFORM_APLITE)
 static GColor get_bac_color(float bac) {
     if (bac <= 0.0f) return GColorMalachite;
     if (bac <= 0.04f) return GColorSpringBud;
@@ -132,11 +139,28 @@ static GColor get_bac_color(float bac) {
     if (bac <= 0.12f) return GColorSunsetOrange;
     return GColorRed;
 }
+#endif
 
 static void apply_theme_to_menu(Window *window, MenuLayer *menu) {
     window_set_background_color(window, theme_bg());
     menu_layer_set_normal_colors(menu, theme_bg(), theme_text());
     menu_layer_set_highlight_colors(menu, theme_highlight_bg(), theme_highlight_text());
+}
+
+static void trigger_big_time_window_update(void) {
+    AppSettings *settings = storage_get_settings();
+
+    #if !defined(PBL_PLATFORM_APLITE)
+    GColor current_time_color = get_bac_color(s_current_bac);
+    #else
+    GColor current_time_color = theme_text();
+    #endif
+
+    if (settings->target_bac >= 0.0f) {
+        big_time_window_update(s_target_time, "Target BAC Time", current_time_color);
+    } else {
+        big_time_window_update(s_zero_time, "Sober By Time", current_time_color);
+    }
 }
 
 static void update_dashboard_text(void) {
@@ -146,9 +170,13 @@ static void update_dashboard_text(void) {
 
     int bac_whole = (int)s_current_bac;
     int bac_thousands = (int)(s_current_bac * 1000.0f) % 1000;
-    snprintf(s_bac_buffer, sizeof(s_bac_buffer), "BAC: %d.%03d", bac_whole, bac_thousands);
 
-    // Choose what to display based on whether timeline targets are enabled
+    #if defined(PBL_ROUND)
+    snprintf(s_bac_buffer, sizeof(s_bac_buffer), "%d.%03d", bac_whole, bac_thousands);
+    #else
+    snprintf(s_bac_buffer, sizeof(s_bac_buffer), "%d.%03d ", bac_whole, bac_thousands);
+    #endif
+
     if (settings->target_bac >= 0.0f) {
         if (s_target_time > 0) {
             struct tm *sober_tm = localtime(&s_target_time);
@@ -164,7 +192,6 @@ static void update_dashboard_text(void) {
             else snprintf(s_sober_buffer, sizeof(s_sober_buffer), "Sober");
         }
     } else {
-        // Timeline disabled, strictly show time to 0.00%
         if (s_zero_time > time(NULL)) {
             struct tm *sober_tm = localtime(&s_zero_time);
             if (sober_tm) strftime(s_sober_buffer, sizeof(s_sober_buffer), "Sober by %H:%M", sober_tm);
@@ -174,8 +201,22 @@ static void update_dashboard_text(void) {
     }
 
     if (s_bac_layer) {
-        GColor header_bg = PBL_IF_COLOR_ELSE(get_bac_color(s_current_bac), theme_bg());
+        #if !defined(PBL_PLATFORM_APLITE)
+        GColor header_bg = get_bac_color(s_current_bac);
         GColor header_text = gcolor_legible_over(header_bg);
+        #else
+        GColor header_bg = theme_bg();
+        GColor header_text = theme_text();
+        #endif
+
+        if (s_bac_title_layer) {
+            #if defined(PBL_ROUND)
+            text_layer_set_background_color(s_bac_title_layer, header_bg);
+            #else
+            text_layer_set_background_color(s_bac_title_layer, GColorClear);
+            #endif
+            text_layer_set_text_color(s_bac_title_layer, header_text);
+        }
 
         text_layer_set_background_color(s_bac_layer, header_bg);
         text_layer_set_text_color(s_bac_layer, header_text);
@@ -191,16 +232,19 @@ static void tick_handler(struct tm *tick_time, TimeUnits units_changed) {
     AppSettings *settings = storage_get_settings();
 
     if (settings->idle_timeout_mins > 0 && s_last_interaction_time > 0) {
-        time_t now = time(NULL);
-        if (now - s_last_interaction_time >= (time_t)(settings->idle_timeout_mins * 60)) {
-            window_stack_pop_all(true);
-            return;
+        if (window_stack_get_top_window() != big_time_window_get_window()) {
+            time_t now = time(NULL);
+            if (now - s_last_interaction_time >= (time_t)(settings->idle_timeout_mins * 60)) {
+                window_stack_pop_all(true);
+                return;
+            }
         }
     }
 
     cleanup_old_drinks();
     update_bac_calculations();
     update_dashboard_text();
+    trigger_big_time_window_update();
 
     if (s_menu_layer) {
         apply_theme_to_menu(s_main_window, s_menu_layer);
@@ -237,22 +281,30 @@ static void update_value_edit_text(void) {
     text_layer_set_text(s_value_edit_layer, s_val_buf);
 }
 
+#if defined(PBL_TOUCH)
+static uint16_t s_ve_touch_repeat_count = 0;
+#endif
+
 static void value_edit_up_click_handler(ClickRecognizerRef recognizer, void *context) {
     app_reset_idle_timer();
     Drink *drinks = storage_get_drinks();
     Drink *d = &drinks[s_editing_drink_idx];
 
+    uint16_t repeats = 0;
+    if (recognizer) repeats = click_number_of_clicks_counted(recognizer);
+    #if defined(PBL_TOUCH)
+    else repeats = s_ve_touch_repeat_count;
+    #endif
+
     if (s_current_edit_mode == EDIT_MODE_TIME) {
         time_t remainder = d->timestamp % 300;
-        if (remainder == 0) {
-            d->timestamp += 300;
-        } else {
-            d->timestamp += (300 - remainder);
-        }
+        if (remainder == 0) d->timestamp += 300;
+        else d->timestamp += (300 - remainder);
         if (d->timestamp > time(NULL)) d->timestamp = time(NULL);
     } else if (s_current_edit_mode == EDIT_MODE_ABV) {
-        d->abv += 0.001f;
-        if (d->abv > 0.99f) d->abv = 0.99f;
+        float step = (repeats > 15) ? 0.01f : 0.001f;
+        d->abv += step;
+        if (d->abv > 0.75f) d->abv = 0.75f;
     } else if (s_current_edit_mode == EDIT_MODE_VOL) {
         d->volume_ml += 10.0f;
         if (d->volume_ml > 5000.0f) d->volume_ml = 5000.0f;
@@ -265,15 +317,19 @@ static void value_edit_down_click_handler(ClickRecognizerRef recognizer, void *c
     Drink *drinks = storage_get_drinks();
     Drink *d = &drinks[s_editing_drink_idx];
 
+    uint16_t repeats = 0;
+    if (recognizer) repeats = click_number_of_clicks_counted(recognizer);
+    #if defined(PBL_TOUCH)
+    else repeats = s_ve_touch_repeat_count;
+    #endif
+
     if (s_current_edit_mode == EDIT_MODE_TIME) {
         time_t remainder = d->timestamp % 300;
-        if (remainder == 0) {
-            d->timestamp -= 300;
-        } else {
-            d->timestamp -= remainder;
-        }
+        if (remainder == 0) d->timestamp -= 300;
+        else d->timestamp -= remainder;
     } else if (s_current_edit_mode == EDIT_MODE_ABV) {
-        if (d->abv > 0.001f) d->abv -= 0.001f;
+        float step = (repeats > 15) ? 0.01f : 0.001f;
+        if (d->abv > step) d->abv -= step;
         else d->abv = 0.0f;
     } else if (s_current_edit_mode == EDIT_MODE_VOL) {
         d->volume_ml -= 10.0f;
@@ -295,7 +351,7 @@ static void value_edit_click_config_provider(void *context) {
     window_single_click_subscribe(BUTTON_ID_SELECT, value_edit_select_click_handler);
 }
 
-#ifdef PBL_TOUCH
+#if defined(PBL_TOUCH)
 static int16_t s_ve_touch_start_x = 0;
 static int16_t s_ve_touch_start_y = 0;
 static int16_t s_ve_touch_last_y = 0;
@@ -308,6 +364,7 @@ static void value_edit_touch_handler(const TouchEvent *event, void *context) {
         s_ve_touch_start_x = event->x;
         s_ve_touch_start_y = event->y;
         s_ve_touch_last_y = event->y;
+        s_ve_touch_repeat_count = 0;
         s_ve_is_drag = false;
     } else if (event->type == TouchEvent_PositionUpdate) {
         if (!s_ve_is_drag && abs(event->y - s_ve_touch_start_y) > 10) s_ve_is_drag = true;
@@ -315,9 +372,11 @@ static void value_edit_touch_handler(const TouchEvent *event, void *context) {
         if (s_ve_is_drag) {
             int16_t delta = event->y - s_ve_touch_last_y;
             if (delta < -15) {
+                s_ve_touch_repeat_count++;
                 value_edit_up_click_handler(NULL, NULL);
                 s_ve_touch_last_y = event->y;
             } else if (delta > 15) {
+                s_ve_touch_repeat_count++;
                 value_edit_down_click_handler(NULL, NULL);
                 s_ve_touch_last_y = event->y;
             }
@@ -342,7 +401,7 @@ static void value_edit_touch_handler(const TouchEvent *event, void *context) {
 
 static void value_edit_window_appear(Window *window) {
     app_reset_idle_timer();
-    #ifdef PBL_TOUCH
+    #if defined(PBL_TOUCH)
     if (touch_service_is_enabled()) {
         touch_service_subscribe(value_edit_touch_handler, NULL);
     }
@@ -350,7 +409,7 @@ static void value_edit_window_appear(Window *window) {
 }
 
 static void value_edit_window_disappear(Window *window) {
-    #ifdef PBL_TOUCH
+    #if defined(PBL_TOUCH)
     if (touch_service_is_enabled()) {
         touch_service_unsubscribe();
     }
@@ -391,8 +450,83 @@ static void value_edit_window_unload(Window *window) {
     s_value_edit_window = NULL;
 }
 
+static int16_t get_dynamic_cell_height(void) {
+    #if defined(PBL_PLATFORM_APLITE)
+    return 44;
+    #else
+    PreferredContentSize size = preferred_content_size();
+    if (size == PreferredContentSizeLarge || size == PreferredContentSizeExtraLarge) return 56;
+    if (size == PreferredContentSizeSmall) return 36;
+    return 44;
+    #endif
+}
+
+static void draw_dynamic_menu_cell(GContext *ctx, const Layer *cell_layer, const char *title, const char *subtitle) {
+    GRect bounds = layer_get_bounds(cell_layer);
+
+    #if defined(PBL_PLATFORM_APLITE)
+    GFont title_font = fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD);
+    GFont sub_font = fonts_get_system_font(FONT_KEY_GOTHIC_18);
+    int title_y = subtitle ? -4 : (bounds.size.h - 24) / 2 - 4;
+    graphics_draw_text(ctx, title, title_font, GRect(5, title_y, bounds.size.w - 10, 32), GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+    if (subtitle) {
+        graphics_draw_text(ctx, subtitle, sub_font, GRect(5, 20, bounds.size.w - 10, 26), GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+    }
+    #else
+    GFont title_font, sub_font;
+    int title_y, sub_y, title_h, sub_h;
+
+    PreferredContentSize size = preferred_content_size();
+    if (size == PreferredContentSizeLarge || size == PreferredContentSizeExtraLarge) {
+        title_font = fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD);
+        sub_font = fonts_get_system_font(FONT_KEY_GOTHIC_24);
+        title_y = -2; sub_y = 26; title_h = 28; sub_h = 24;
+    } else if (size == PreferredContentSizeSmall) {
+        title_font = fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD);
+        sub_font = fonts_get_system_font(FONT_KEY_GOTHIC_14);
+        title_y = -2; sub_y = 16; title_h = 18; sub_h = 14;
+    } else { // Medium
+        title_font = fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD);
+        sub_font = fonts_get_system_font(FONT_KEY_GOTHIC_18);
+        title_y = -4; sub_y = 20; title_h = 24; sub_h = 18;
+    }
+
+    if (!subtitle) {
+        title_y = (bounds.size.h - title_h) / 2 - 4;
+    }
+
+    #if defined(PBL_ROUND)
+    if (bounds.size.w <= 180) { // Chalk (Stacked)
+        graphics_draw_text(ctx, title, title_font, GRect(5, title_y, bounds.size.w - 10, title_h + 8), GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+        if (subtitle) {
+            graphics_draw_text(ctx, subtitle, sub_font, GRect(5, sub_y, bounds.size.w - 10, sub_h + 8), GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+        }
+    } else { // Gabbro (Side-by-side)
+        if (subtitle) {
+            GSize title_size = graphics_text_layout_get_content_size(title, title_font, GRect(0, 0, bounds.size.w, title_h + 8), GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft);
+            int title_width = title_size.w + 4;
+            if (title_width > bounds.size.w - 50) title_width = bounds.size.w - 50;
+
+            int sub_w = bounds.size.w - title_width - 20;
+            if (sub_w < 0) sub_w = 0;
+
+            graphics_draw_text(ctx, title, title_font, GRect(10, bounds.size.h / 2 - (title_h/2) - 4, title_width, title_h + 8), GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+            graphics_draw_text(ctx, subtitle, sub_font, GRect(10 + title_width, bounds.size.h / 2 - (sub_h/2) - 2, sub_w, sub_h + 8), GTextOverflowModeTrailingEllipsis, GTextAlignmentRight, NULL);
+        } else {
+            graphics_draw_text(ctx, title, title_font, GRect(10, bounds.size.h / 2 - (title_h/2) - 4, bounds.size.w - 20, title_h + 8), GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+        }
+    }
+    #else
+    graphics_draw_text(ctx, title, title_font, GRect(5, title_y, bounds.size.w - 10, title_h + 8), GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+    if (subtitle) {
+        graphics_draw_text(ctx, subtitle, sub_font, GRect(5, sub_y, bounds.size.w - 10, sub_h + 8), GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+    }
+    #endif
+    #endif
+}
+
 static int16_t edit_get_cell_height_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *data) {
-    return UI_ROW_HEIGHT;
+    return get_dynamic_cell_height();
 }
 
 static uint16_t edit_get_num_rows_callback(MenuLayer *menu_layer, uint16_t section_index, void *data) {
@@ -411,7 +545,7 @@ static void edit_draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuI
             if (tick_time) {
                 strftime(subtitle, sizeof(subtitle), "%H:%M", tick_time);
             }
-            menu_cell_basic_draw(ctx, cell_layer, "Time Finished", subtitle, NULL);
+            draw_dynamic_menu_cell(ctx, cell_layer, "Time Finished", subtitle);
             break;
         }
         case 1: {
@@ -419,7 +553,7 @@ static void edit_draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuI
             int abv_whole = abv_tenths / 10;
             int abv_decimal = abv_tenths % 10;
             snprintf(subtitle, sizeof(subtitle), "%d.%d%%", abv_whole, abv_decimal);
-            menu_cell_basic_draw(ctx, cell_layer, "Edit ABV", subtitle, NULL);
+            draw_dynamic_menu_cell(ctx, cell_layer, "Edit ABV", subtitle);
             break;
         }
         case 2: {
@@ -431,7 +565,7 @@ static void edit_draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuI
             } else {
                 snprintf(subtitle, sizeof(subtitle), "%d.%d oz (%d ml)", oz_w, oz_d, (int)d->volume_ml);
             }
-            menu_cell_basic_draw(ctx, cell_layer, "Edit Volume", subtitle, NULL);
+            draw_dynamic_menu_cell(ctx, cell_layer, "Edit Volume", subtitle);
             break;
         }
         case 3: {
@@ -444,11 +578,11 @@ static void edit_draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuI
             } else {
                 snprintf(subtitle, sizeof(subtitle), "Out of %d.%d oz container", oz_w, oz_d);
             }
-            menu_cell_basic_draw(ctx, cell_layer, "Edit Portion", subtitle, NULL);
+            draw_dynamic_menu_cell(ctx, cell_layer, "Edit Portion", subtitle);
             break;
         }
         case 4:
-            menu_cell_basic_draw(ctx, cell_layer, "Delete Drink", "Remove from log", NULL);
+            draw_dynamic_menu_cell(ctx, cell_layer, "Delete Drink", "Remove from log");
             break;
     }
 }
@@ -495,7 +629,6 @@ static void edit_select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, v
     }
 }
 
-// Hook into Up/Down scroll events to reset timer
 static void edit_selection_changed_callback(struct MenuLayer *menu_layer, MenuIndex new_index, MenuIndex old_index, void *callback_context) {
     app_reset_idle_timer();
 }
@@ -552,7 +685,7 @@ static uint16_t main_get_num_rows_callback(MenuLayer *menu_layer, uint16_t secti
 }
 
 static int16_t main_get_cell_height_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *data) {
-    return UI_ROW_HEIGHT;
+    return get_dynamic_cell_height();
 }
 
 static int16_t main_get_header_height_callback(MenuLayer *menu_layer, uint16_t section_index, void *data) {
@@ -568,7 +701,7 @@ static void main_draw_header_callback(GContext* ctx, const Layer *cell_layer, ui
 
 static void main_draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuIndex *cell_index, void *data) {
     if (cell_index->section == 0) {
-        menu_cell_basic_draw(ctx, cell_layer, "Add Drink", "Select Volume & ABV", NULL);
+        draw_dynamic_menu_cell(ctx, cell_layer, "Add Drink", "Select Volume & ABV");
     }
     else if (cell_index->section == 1) {
         Drink *drinks = storage_get_drinks();
@@ -596,15 +729,15 @@ static void main_draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuI
             snprintf(subtitle, sizeof(subtitle), "%d.%doz (%dml) | %d.%d%%", oz_w, oz_d, (int)d->volume_ml, abv_whole, abv_decimal);
         }
 
-        menu_cell_basic_draw(ctx, cell_layer, title, subtitle, NULL);
+        draw_dynamic_menu_cell(ctx, cell_layer, title, subtitle);
     }
     else if (cell_index->section == 2) {
-        menu_cell_basic_draw(ctx, cell_layer, "Settings", "Weight, Sex, Units", NULL);
+        draw_dynamic_menu_cell(ctx, cell_layer, "Settings", "Weight, Sex, Units");
     }
     else if (cell_index->section == 3) {
         static char s_time_buffer[16];
         clock_copy_time_string(s_time_buffer, sizeof(s_time_buffer));
-        menu_cell_basic_draw(ctx, cell_layer, "Current Time", s_time_buffer, NULL);
+        draw_dynamic_menu_cell(ctx, cell_layer, "Current Time", s_time_buffer);
     }
 }
 
@@ -626,6 +759,20 @@ static void main_select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, v
         window_stack_push(s_edit_window, true);
     } else if (cell_index->section == 2) {
         settings_menu_push();
+    } else if (cell_index->section == 3) {
+        AppSettings *settings = storage_get_settings();
+
+        #if !defined(PBL_PLATFORM_APLITE)
+        GColor current_time_color = get_bac_color(s_current_bac);
+        #else
+        GColor current_time_color = theme_text();
+        #endif
+
+        if (settings->target_bac >= 0.0f) {
+            big_time_window_push(s_target_time, "Target BAC Time", current_time_color);
+        } else {
+            big_time_window_push(s_zero_time, "Sober By Time", current_time_color);
+        }
     }
 }
 
@@ -648,17 +795,68 @@ static void main_window_load(Window *window) {
     Layer *window_layer = window_get_root_layer(window);
     GRect bounds = layer_get_bounds(window_layer);
 
-    s_bac_layer = text_layer_create(GRect(0, 5, bounds.size.w, 35));
+    // Universally separate the "BAC" label across all platforms
+    #if defined(PBL_ROUND)
+    s_bac_title_layer = text_layer_create(GRect(0, 2, bounds.size.w, 16));
+    text_layer_set_font(s_bac_title_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD));
+    text_layer_set_text_alignment(s_bac_title_layer, GTextAlignmentCenter);
+    text_layer_set_text(s_bac_title_layer, "BAC");
+    layer_add_child(window_layer, text_layer_get_layer(s_bac_title_layer));
+
+    s_bac_layer = text_layer_create(GRect(0, 18, bounds.size.w, 30));
     text_layer_set_font(s_bac_layer, fonts_get_system_font(FONT_KEY_BITHAM_30_BLACK));
     text_layer_set_text_alignment(s_bac_layer, GTextAlignmentCenter);
     layer_add_child(window_layer, text_layer_get_layer(s_bac_layer));
 
-    s_sober_layer = text_layer_create(GRect(0, 35, bounds.size.w, 30));
+    // Add 4 pixels of bottom padding specifically for Chalk (180px width)
+    int sober_h = (bounds.size.w <= 180) ? 28 : 24;
+    s_sober_layer = text_layer_create(GRect(0, 48, bounds.size.w, sober_h));
+
+    int menu_y = 48 + sober_h;
+    GRect menu_bounds = GRect(0, menu_y, bounds.size.w, bounds.size.h - menu_y);
+    #else
+    int bac_h = 35;
+    int title_y = 12;
+    int title_w = 45;
+    int sober_y = 40;
+    int menu_y = 65;
+    const char *bac_font = FONT_KEY_BITHAM_30_BLACK;
+    const char *title_font = FONT_KEY_GOTHIC_14_BOLD;
+
+    #if !defined(PBL_PLATFORM_APLITE)
+    // Scale everything up substantially for the large Emery screen
+    if (PBL_PLATFORM_TYPE_CURRENT == PlatformTypeEmery) {
+        bac_h = 55;
+        title_y = 18;
+        title_w = 65;
+        sober_y = 60;
+        menu_y = 90;
+        bac_font = FONT_KEY_BITHAM_42_BOLD;
+        title_font = FONT_KEY_GOTHIC_24_BOLD;
+    }
+    #endif
+
+    // On rectangular screens, the numbers act as the full-width background color band
+    s_bac_layer = text_layer_create(GRect(0, 5, bounds.size.w, bac_h));
+    text_layer_set_font(s_bac_layer, fonts_get_system_font(bac_font));
+    text_layer_set_text_alignment(s_bac_layer, GTextAlignmentRight);
+    layer_add_child(window_layer, text_layer_get_layer(s_bac_layer));
+
+    // The "BAC" title sits cleanly on top of the left edge with a transparent background
+    s_bac_title_layer = text_layer_create(GRect(5, title_y, title_w, 30));
+    text_layer_set_font(s_bac_title_layer, fonts_get_system_font(title_font));
+    text_layer_set_text_alignment(s_bac_title_layer, GTextAlignmentLeft);
+    text_layer_set_text(s_bac_title_layer, "BAC:");
+    layer_add_child(window_layer, text_layer_get_layer(s_bac_title_layer));
+
+    s_sober_layer = text_layer_create(GRect(0, sober_y, bounds.size.w, menu_y - sober_y));
+    GRect menu_bounds = GRect(0, menu_y, bounds.size.w, bounds.size.h - menu_y);
+    #endif
+
     text_layer_set_font(s_sober_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24));
     text_layer_set_text_alignment(s_sober_layer, GTextAlignmentCenter);
     layer_add_child(window_layer, text_layer_get_layer(s_sober_layer));
 
-    GRect menu_bounds = GRect(0, 65, bounds.size.w, bounds.size.h - 65);
     s_menu_layer = menu_layer_create(menu_bounds);
     menu_layer_set_callbacks(s_menu_layer, NULL, s_main_menu_cbs);
     menu_layer_set_click_config_onto_window(s_menu_layer, window);
@@ -686,6 +884,9 @@ static void main_window_disappear(Window *window) {
 }
 
 static void main_window_unload(Window *window) {
+    if (s_bac_title_layer) {
+        text_layer_destroy(s_bac_title_layer);
+    }
     text_layer_destroy(s_bac_layer);
     text_layer_destroy(s_sober_layer);
     menu_layer_destroy(s_menu_layer);
@@ -702,6 +903,7 @@ static void init(void) {
 
     app_message_open(APP_MESSAGE_INBOX_SIZE_MINIMUM, APP_MESSAGE_OUTBOX_SIZE_MINIMUM);
 
+    app_reset_idle_timer();
     tick_timer_service_subscribe(MINUTE_UNIT, tick_handler);
 
     s_main_window = window_create();
