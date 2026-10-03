@@ -1,7 +1,11 @@
 #pragma once
 #include "bac_math.h"
 
+#if defined(PBL_PLATFORM_APLITE)
+#define MAX_DRINKS 15
+#else
 #define MAX_DRINKS 20
+#endif
 
 typedef uint8_t ThemeMode;
 #define THEME_MODE_LIGHT 0
@@ -25,8 +29,8 @@ typedef struct {
     float target_bac;
     bool auto_exit;
     uint8_t region;
-    float last_custom_volume_ml; // NEW
-    float last_custom_abv;       // NEW
+    float last_custom_volume_ml;
+    float last_custom_abv;
 } AppSettings;
 
 void storage_load_drinks(Drink* drinks, int* num_drinks);
@@ -35,7 +39,7 @@ void storage_add_drink(Drink drink);
 void storage_clear_drinks(void);
 Drink* storage_get_drinks(void);
 int storage_get_num_drinks(void);
-
+void storage_deinit(void);
 void storage_load_settings(void);
 void storage_save_settings(void);
 AppSettings* storage_get_settings(void);

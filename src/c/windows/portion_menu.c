@@ -5,6 +5,13 @@
 #include "../core/touch_menu.h"
 
 extern void app_reset_idle_timer(void);
+extern void wizard_advance(void);
+
+extern int g_wizard_next_step;
+extern float g_wizard_vol;
+extern float g_wizard_orig_vol;
+extern float g_wizard_abv;
+extern DrinkShape g_wizard_shape;
 
 static const float s_volume_steps_pct[] = {
     10.0f, 20.0f, 25.0f, 30.0f, 33.3333f, 40.0f, 50.0f,
@@ -13,8 +20,11 @@ static const float s_volume_steps_pct[] = {
 #define NUM_VOLUME_STEPS (sizeof(s_volume_steps_pct) / sizeof(s_volume_steps_pct[0]))
 
 static Window *s_window;
-static Layer *s_canvas_layer;
 static TextLayer *s_portion_text_layer;
+
+#if !defined(PBL_PLATFORM_APLITE)
+static Layer *s_canvas_layer;
+#endif
 
 static float s_max_volume_ml;
 static float s_current_volume_ml;
@@ -23,28 +33,35 @@ static float s_default_abv;
 static DrinkShape s_shape;
 static int s_edit_drink_idx = -1;
 
+static bool s_click_locked = false;
+static void unlock_click(void *data) { s_click_locked = false; }
+
+#if defined(PBL_TOUCH)
+static uint16_t s_touch_repeat_count = 0;
+#endif
+
 static void update_text_layer(void) {
-    static char s_buffer[32];
-    AppSettings *settings = storage_get_settings();
+    static char s_buffer[48]; AppSettings *settings = storage_get_settings();
     int percent = (int)(s_volume_steps_pct[s_current_step_idx] + 0.5f);
 
-    float oz = (s_current_volume_ml / 29.5735f) + 0.05f;
-    int oz_w = (int)oz;
-    int oz_d = (int)(oz * 10.0f) % 10;
+    int vol_ml = (int)(s_current_volume_ml + 0.5f);
+    int oz_tenths = (vol_ml * 10000 + 14786) / 29573;
 
-    if (settings->use_metric_volume) {
-        snprintf(s_buffer, sizeof(s_buffer), "%d%% - %d ml", percent, (int)(s_current_volume_ml + 0.5f));
-    } else {
-        snprintf(s_buffer, sizeof(s_buffer), "%d%% - %d.%d oz", percent, oz_w, oz_d);
-    }
+    #if defined(PBL_PLATFORM_APLITE)
+    if (settings->use_metric_volume) snprintf(s_buffer, sizeof(s_buffer), "  +  \n%d%%\n%d ml\n  -  ", percent, vol_ml);
+    else snprintf(s_buffer, sizeof(s_buffer), "  +  \n%d%%\n%d.%d oz\n  -  ", percent, oz_tenths / 10, oz_tenths % 10);
+    #else
+    if (settings->use_metric_volume) snprintf(s_buffer, sizeof(s_buffer), "%d%% - %d ml", percent, vol_ml);
+    else snprintf(s_buffer, sizeof(s_buffer), "%d%% - %d.%d oz", percent, oz_tenths / 10, oz_tenths % 10);
+    #endif
+
     text_layer_set_text(s_portion_text_layer, s_buffer);
 }
 
+#if !defined(PBL_PLATFORM_APLITE)
 static void canvas_update_proc(Layer *layer, GContext *ctx) {
-    GRect bounds = layer_get_bounds(layer);
-    int cx = bounds.size.w / 2;
+    GRect bounds = layer_get_bounds(layer); int cx = bounds.size.w / 2;
     int cy = PBL_IF_ROUND_ELSE((bounds.size.h / 2) - 20, (bounds.size.h - 40) / 2);
-
     float fill_ratio = s_current_volume_ml / s_max_volume_ml;
 
     GColor liquid_color;
@@ -65,8 +82,7 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
     static const GPoint s_wine_glass_pts[] = {{10,0}, {50,0}, {60,35}, {32,70}, {28,70}, {0,35}};
     static const GPoint s_shot_pts[] = {{0,0}, {48,0}, {38,50}, {10,50}};
 
-    int h, w, num_pts, neck_h = 0, body_h = 0;
-    const GPoint *pts;
+    int h, w, num_pts, neck_h = 0, body_h = 0; const GPoint *pts;
 
     if (s_shape == SHAPE_CAN || s_shape == SHAPE_CUSTOM) { h = 100; w = 60; pts = s_can_pts; num_pts = 8; }
     else if (s_shape == SHAPE_TALLBOY) { h = 140; w = 60; pts = s_tallboy_pts; num_pts = 8; }
@@ -80,124 +96,64 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
     else { h = 100; w = 60; pts = s_can_pts; num_pts = 8; }
 
     int scale_n = 1, scale_d = 1;
-
     #if defined(PBL_ROUND)
     scale_n = 2; scale_d = 3;
     #else
-    if (bounds.size.h <= 168) {
-        if (s_shape == SHAPE_WINE_BOTTLE || s_shape == SHAPE_BOTTLE || s_shape == SHAPE_TALLBOY || s_shape == SHAPE_WINE_GLASS) {
-            scale_n = 3; scale_d = 4;
-        }
-    }
+    if (bounds.size.h <= 168) { if (s_shape == SHAPE_WINE_BOTTLE || s_shape == SHAPE_BOTTLE || s_shape == SHAPE_TALLBOY || s_shape == SHAPE_WINE_GLASS) { scale_n = 3; scale_d = 4; } }
     #endif
 
     GPoint scaled_pts[16];
-    for (int i = 0; i < num_pts; i++) {
-        scaled_pts[i].x = (pts[i].x * scale_n) / scale_d;
-        scaled_pts[i].y = (pts[i].y * scale_n) / scale_d;
-    }
-
+    for (int i = 0; i < num_pts; i++) { scaled_pts[i].x = (pts[i].x * scale_n) / scale_d; scaled_pts[i].y = (pts[i].y * scale_n) / scale_d; }
     GPathInfo path_info = { .num_points = num_pts, .points = scaled_pts };
-
-    h = (h * scale_n) / scale_d;
-    w = (w * scale_n) / scale_d;
-    neck_h = (neck_h * scale_n) / scale_d;
-    body_h = (body_h * scale_n) / scale_d;
+    h = (h * scale_n) / scale_d; w = (w * scale_n) / scale_d; neck_h = (neck_h * scale_n) / scale_d; body_h = (body_h * scale_n) / scale_d;
 
     GPath *path = gpath_create(&path_info);
-
     int y_offset = cy - h/2;
-    if (s_shape == SHAPE_WINE_BOTTLE || s_shape == SHAPE_BOTTLE) {
-        y_offset += PBL_IF_ROUND_ELSE(5, 10);
-    }
+    if (s_shape == SHAPE_WINE_BOTTLE || s_shape == SHAPE_BOTTLE) y_offset += PBL_IF_ROUND_ELSE(5, 10);
 
     if (s_shape == SHAPE_PINT) {
-        graphics_context_set_fill_color(ctx, glass_color);
-        int rx = (20 * scale_n) / scale_d;
-        int ry = (20 * scale_n) / scale_d;
-        int rw = (30 * scale_n) / scale_d;
-        int rh = (60 * scale_n) / scale_d;
+        graphics_context_set_fill_color(ctx, glass_color); int rx = (20 * scale_n) / scale_d; int ry = (20 * scale_n) / scale_d; int rw = (30 * scale_n) / scale_d; int rh = (60 * scale_n) / scale_d;
         graphics_fill_rect(ctx, GRect(cx + rx, y_offset + ry, rw, rh), 12, GCornersAll);
-
-        graphics_context_set_fill_color(ctx, theme_bg());
-        int bx = (24 * scale_n) / scale_d;
-        int by = (24 * scale_n) / scale_d;
-        int bw = (22 * scale_n) / scale_d;
-        int bh = (52 * scale_n) / scale_d;
+        graphics_context_set_fill_color(ctx, theme_bg()); int bx = (24 * scale_n) / scale_d; int by = (24 * scale_n) / scale_d; int bw = (22 * scale_n) / scale_d; int bh = (52 * scale_n) / scale_d;
         graphics_fill_rect(ctx, GRect(cx + bx, y_offset + by, bw, bh), 8, GCornersAll);
     } else if (s_shape == SHAPE_GROWLER) {
-        graphics_context_set_fill_color(ctx, glass_color);
-        int rx = (25 * scale_n) / scale_d;
-        int ry = (15 * scale_n) / scale_d;
-        int rw = (25 * scale_n) / scale_d;
-        int rh = (40 * scale_n) / scale_d;
+        graphics_context_set_fill_color(ctx, glass_color); int rx = (25 * scale_n) / scale_d; int ry = (15 * scale_n) / scale_d; int rw = (25 * scale_n) / scale_d; int rh = (40 * scale_n) / scale_d;
         graphics_fill_rect(ctx, GRect(cx + rx, y_offset + ry, rw, rh), 10, GCornersAll);
-
-        graphics_context_set_fill_color(ctx, theme_bg());
-        int bx = (29 * scale_n) / scale_d;
-        int by = (19 * scale_n) / scale_d;
-        int bw = (17 * scale_n) / scale_d;
-        int bh = (32 * scale_n) / scale_d;
+        graphics_context_set_fill_color(ctx, theme_bg()); int bx = (29 * scale_n) / scale_d; int by = (19 * scale_n) / scale_d; int bw = (17 * scale_n) / scale_d; int bh = (32 * scale_n) / scale_d;
         graphics_fill_rect(ctx, GRect(cx + bx, y_offset + by, bw, bh), 6, GCornersAll);
     }
 
     gpath_move_to(path, GPoint(cx - w/2, y_offset));
-
-    graphics_context_set_fill_color(ctx, liquid_color);
-    gpath_draw_filled(ctx, path);
+    graphics_context_set_fill_color(ctx, liquid_color); gpath_draw_filled(ctx, path);
 
     int empty_h;
     if (s_shape == SHAPE_BOTTLE || s_shape == SHAPE_WINE_BOTTLE || s_shape == SHAPE_GROWLER) {
         float neck_vol_pct = 0.10f;
-        if (fill_ratio <= (1.0f - neck_vol_pct)) {
-            float body_fill = fill_ratio / (1.0f - neck_vol_pct);
-            empty_h = neck_h + body_h - (int)(body_fill * body_h);
-        } else {
-            float neck_fill = (fill_ratio - (1.0f - neck_vol_pct)) / neck_vol_pct;
-            empty_h = neck_h - (int)(neck_fill * neck_h);
-        }
-    } else {
-        empty_h = h - (int)(fill_ratio * h);
-    }
+        if (fill_ratio <= (1.0f - neck_vol_pct)) { float body_fill = fill_ratio / (1.0f - neck_vol_pct); empty_h = neck_h + body_h - (int)(body_fill * body_h); }
+        else { float neck_fill = (fill_ratio - (1.0f - neck_vol_pct)) / neck_vol_pct; empty_h = neck_h - (int)(neck_fill * neck_h); }
+    } else empty_h = h - (int)(fill_ratio * h);
 
-    if (empty_h > 0) {
-        graphics_context_set_fill_color(ctx, theme_bg());
-        graphics_fill_rect(ctx, GRect(cx - w/2 - 2, y_offset - 2, w + 4, empty_h + 2), 0, GCornerNone);
-    }
+    if (empty_h > 0) { graphics_context_set_fill_color(ctx, theme_bg()); graphics_fill_rect(ctx, GRect(cx - w/2 - 2, y_offset - 2, w + 4, empty_h + 2), 0, GCornerNone); }
 
     if (s_shape == SHAPE_WINE_GLASS) {
-        graphics_context_set_fill_color(ctx, glass_color);
-        int stem_y = (70 * scale_n) / scale_d;
-        int stem_h = (40 * scale_n) / scale_d;
-        int base_x = (15 * scale_n) / scale_d;
-        int base_y = (106 * scale_n) / scale_d;
-        int base_w = (30 * scale_n) / scale_d;
-        int base_h = (4 * scale_n) / scale_d;
-
-        int stem_w = (4 * scale_n) / scale_d;
-        if (stem_w < 2) stem_w = 2;
-
+        graphics_context_set_fill_color(ctx, glass_color); int stem_y = (70 * scale_n) / scale_d; int stem_h = (40 * scale_n) / scale_d;
+        int base_x = (15 * scale_n) / scale_d; int base_y = (106 * scale_n) / scale_d; int base_w = (30 * scale_n) / scale_d; int base_h = (4 * scale_n) / scale_d;
+        int stem_w = (4 * scale_n) / scale_d; if (stem_w < 2) stem_w = 2;
         graphics_fill_rect(ctx, GRect(cx - (stem_w/2), y_offset + stem_y, stem_w, stem_h), 0, GCornerNone);
         graphics_fill_rect(ctx, GRect(cx - base_x, y_offset + base_y, base_w, base_h), 2, GCornersAll);
     }
 
-    graphics_context_set_stroke_color(ctx, glass_color);
-    graphics_context_set_stroke_width(ctx, 3);
-    gpath_draw_outline(ctx, path);
+    graphics_context_set_stroke_color(ctx, glass_color); graphics_context_set_stroke_width(ctx, 3); gpath_draw_outline(ctx, path);
 
     graphics_context_set_stroke_width(ctx, 1);
-    if (s_shape == SHAPE_CAN || s_shape == SHAPE_TALLBOY || s_shape == SHAPE_CUSTOM) {
-        graphics_draw_line(ctx, GPoint(cx - w/2 + PBL_IF_ROUND_ELSE(3, 5), y_offset), GPoint(cx + w/2 - PBL_IF_ROUND_ELSE(3, 5), y_offset));
-    } else if (s_shape == SHAPE_BOTTLE || s_shape == SHAPE_WINE_BOTTLE) {
-        graphics_draw_line(ctx, GPoint(cx - PBL_IF_ROUND_ELSE(5, 7), y_offset), GPoint(cx + PBL_IF_ROUND_ELSE(5, 7), y_offset));
-    } else if (s_shape == SHAPE_GROWLER) {
-        graphics_draw_line(ctx, GPoint(cx - PBL_IF_ROUND_ELSE(7, 10), y_offset), GPoint(cx + PBL_IF_ROUND_ELSE(7, 10), y_offset));
-    } else if (s_shape == SHAPE_SHOT) {
-        graphics_draw_line(ctx, GPoint(cx - w/2, y_offset), GPoint(cx + w/2, y_offset));
-    }
+    if (s_shape == SHAPE_CAN || s_shape == SHAPE_TALLBOY || s_shape == SHAPE_CUSTOM) graphics_draw_line(ctx, GPoint(cx - w/2 + PBL_IF_ROUND_ELSE(3, 5), y_offset), GPoint(cx + w/2 - PBL_IF_ROUND_ELSE(3, 5), y_offset));
+    else if (s_shape == SHAPE_BOTTLE || s_shape == SHAPE_WINE_BOTTLE) graphics_draw_line(ctx, GPoint(cx - PBL_IF_ROUND_ELSE(5, 7), y_offset), GPoint(cx + PBL_IF_ROUND_ELSE(5, 7), y_offset));
+    else if (s_shape == SHAPE_GROWLER) graphics_draw_line(ctx, GPoint(cx - PBL_IF_ROUND_ELSE(7, 10), y_offset), GPoint(cx + PBL_IF_ROUND_ELSE(7, 10), y_offset));
+    else if (s_shape == SHAPE_SHOT) graphics_draw_line(ctx, GPoint(cx - w/2, y_offset), GPoint(cx + w/2, y_offset));
 
     gpath_destroy(path);
 }
+#endif
 
 static void up_click_handler(ClickRecognizerRef recognizer, void *context) {
     app_reset_idle_timer();
@@ -205,7 +161,9 @@ static void up_click_handler(ClickRecognizerRef recognizer, void *context) {
         s_current_step_idx++;
         s_current_volume_ml = s_max_volume_ml * (s_volume_steps_pct[s_current_step_idx] / 100.0f);
         update_text_layer();
-        layer_mark_dirty(s_canvas_layer);
+        #if !defined(PBL_PLATFORM_APLITE)
+        if (s_canvas_layer) layer_mark_dirty(s_canvas_layer);
+        #endif
     }
 }
 
@@ -215,19 +173,26 @@ static void down_click_handler(ClickRecognizerRef recognizer, void *context) {
         s_current_step_idx--;
         s_current_volume_ml = s_max_volume_ml * (s_volume_steps_pct[s_current_step_idx] / 100.0f);
         update_text_layer();
-        layer_mark_dirty(s_canvas_layer);
+        #if !defined(PBL_PLATFORM_APLITE)
+        if (s_canvas_layer) layer_mark_dirty(s_canvas_layer);
+        #endif
     }
 }
 
 static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
+    if (s_click_locked) return;
+    s_click_locked = true; app_timer_register(300, unlock_click, NULL);
     app_reset_idle_timer();
+
     if (s_edit_drink_idx >= 0) {
         Drink *drinks = storage_get_drinks();
         drinks[s_edit_drink_idx].volume_ml = s_current_volume_ml;
         storage_save_drinks(drinks, storage_get_num_drinks());
         window_stack_pop(true);
     } else {
-        abv_window_push(s_current_volume_ml, s_max_volume_ml, s_default_abv, s_shape);
+        g_wizard_vol = s_current_volume_ml;
+        g_wizard_next_step = 2; // Route natively
+        wizard_advance();
     }
 }
 
@@ -238,79 +203,87 @@ static void click_config_provider(void *context) {
 }
 
 #if defined(PBL_TOUCH)
-static int16_t s_touch_start_x = 0;
-static int16_t s_touch_start_y = 0;
-static int16_t s_touch_last_y = 0;
-static bool s_is_drag = false;
+static int16_t s_touch_start_x = 0; static int16_t s_touch_start_y = 0;
+static int16_t s_touch_last_y = 0; static bool s_is_drag = false;
 
 static void touch_handler(const TouchEvent *event, void *context) {
     app_reset_idle_timer();
     if (event->type == TouchEvent_Touchdown) {
-        s_touch_start_x = event->x;
-        s_touch_start_y = event->y;
-        s_touch_last_y = event->y;
-        s_is_drag = false;
+        s_touch_start_x = event->x; s_touch_start_y = event->y; s_touch_last_y = event->y; s_is_drag = false;
     } else if (event->type == TouchEvent_PositionUpdate) {
         if (!s_is_drag && abs(event->y - s_touch_start_y) > 10) s_is_drag = true;
-
         if (s_is_drag) {
             int16_t delta = event->y - s_touch_last_y;
-            if (delta < -15) {
-                up_click_handler(NULL, NULL);
-                s_touch_last_y = event->y;
-            } else if (delta > 15) {
-                down_click_handler(NULL, NULL);
-                s_touch_last_y = event->y;
-            }
+            if (delta < -15) { up_click_handler(NULL, NULL); s_touch_last_y = event->y; }
+            else if (delta > 15) { down_click_handler(NULL, NULL); s_touch_last_y = event->y; }
         }
     } else if (event->type == TouchEvent_Liftoff) {
-        int16_t dx = event->x - s_touch_start_x;
-        int16_t dy = event->y - s_touch_start_y;
-
+        int16_t dx = event->x - s_touch_start_x; int16_t dy = event->y - s_touch_start_y;
         if (abs(dx) > 40 && abs(dx) > abs(dy)) {
             AppSettings *settings = storage_get_settings();
             bool is_back = settings->right_handed_mode ? (dx > 40) : (dx < -40);
-            if (is_back) {
-                window_stack_pop(true);
-                return;
-            }
+            if (is_back) { window_stack_pop(true); return; }
         }
-
         if (!s_is_drag) select_click_handler(NULL, NULL);
     }
 }
 #endif
 
 static void window_appear(Window *window) {
+    s_click_locked = false;
     app_reset_idle_timer();
     #if defined(PBL_TOUCH)
-    if (touch_service_is_enabled()) {
-        touch_service_subscribe(touch_handler, NULL);
-    }
+    if (touch_service_is_enabled()) touch_service_subscribe(touch_handler, NULL);
     #endif
 }
 
 static void window_disappear(Window *window) {
     #if defined(PBL_TOUCH)
-    if (touch_service_is_enabled()) {
-        touch_service_unsubscribe();
-    }
+    if (touch_service_is_enabled()) touch_service_unsubscribe();
     #endif
 }
 
-static void window_load(Window *window) {
-    Layer *window_layer = window_get_root_layer(window);
-    GRect bounds = layer_get_bounds(window_layer);
+static void oom_pop_callback(void *data) { window_stack_pop(false); }
 
+static void window_load(Window *window) {
+    Layer *window_layer = window_get_root_layer(window); GRect bounds = layer_get_bounds(window_layer);
     window_set_background_color(window, theme_bg());
 
+    #if !defined(PBL_PLATFORM_APLITE)
     s_canvas_layer = layer_create(bounds);
-    layer_set_update_proc(s_canvas_layer, canvas_update_proc);
-    layer_add_child(window_layer, s_canvas_layer);
+    if (s_canvas_layer) {
+        layer_set_update_proc(s_canvas_layer, canvas_update_proc); layer_add_child(window_layer, s_canvas_layer);
+    }
+    #endif
 
     int text_y = PBL_IF_ROUND_ELSE((bounds.size.h / 2) + 30, bounds.size.h - 40);
-    s_portion_text_layer = text_layer_create(GRect(0, text_y, bounds.size.w, 30));
-    text_layer_set_font(s_portion_text_layer, fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD));
+    int text_h = 30;
+
+    // FIX: Apply dynamic text sizing matching the log editor
+    GFont font = fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD);
+
+    #if !defined(PBL_PLATFORM_APLITE)
+    PreferredContentSize size = preferred_content_size();
+    if (size == PreferredContentSizeLarge || size == PreferredContentSizeExtraLarge) {
+        font = fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD);
+        text_y -= 5; text_h = 35;
+    } else if (size == PreferredContentSizeSmall) {
+        font = fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD);
+        text_y += 5; text_h = 25;
+    }
+    #else
+    text_y = (bounds.size.h / 2) - 60;
+    text_h = 120;
+    #endif
+
+    s_portion_text_layer = text_layer_create(GRect(0, text_y, bounds.size.w, text_h));
+
+    if (!s_portion_text_layer) {
+        app_timer_register(10, oom_pop_callback, NULL);
+        return;
+    }
+
+    text_layer_set_font(s_portion_text_layer, font);
     text_layer_set_text_alignment(s_portion_text_layer, GTextAlignmentCenter);
     text_layer_set_background_color(s_portion_text_layer, GColorClear);
     text_layer_set_text_color(s_portion_text_layer, theme_text());
@@ -319,47 +292,39 @@ static void window_load(Window *window) {
     update_text_layer();
 }
 
+static void destroy_window_cb(void *data) { window_destroy((Window*)data); }
+
 static void window_unload(Window *window) {
-    layer_destroy(s_canvas_layer);
-    text_layer_destroy(s_portion_text_layer);
-    window_destroy(s_window);
-    s_window = NULL;
+    #if !defined(PBL_PLATFORM_APLITE)
+    if (s_canvas_layer) { layer_destroy(s_canvas_layer); s_canvas_layer = NULL; }
+    #endif
+    if (s_portion_text_layer) { text_layer_destroy(s_portion_text_layer); s_portion_text_layer = NULL; }
+    if (window == s_window) {
+        s_window = NULL;
+        app_timer_register(50, destroy_window_cb, window);
+    }
 }
 
 void portion_menu_push(float max_volume_ml, float current_volume_ml, float default_abv, DrinkShape shape, int edit_drink_idx) {
-    s_max_volume_ml = max_volume_ml;
-    s_default_abv = default_abv;
-    s_shape = shape;
-    s_edit_drink_idx = edit_drink_idx;
+    s_max_volume_ml = max_volume_ml; s_default_abv = default_abv;
+    s_shape = shape; s_edit_drink_idx = edit_drink_idx;
 
-    float target_pct = (current_volume_ml / max_volume_ml) * 100.0f;
-    s_current_step_idx = NUM_VOLUME_STEPS - 1;
-    float min_diff = 100.0f;
+    float target_pct = (current_volume_ml / max_volume_ml) * 100.0f; s_current_step_idx = NUM_VOLUME_STEPS - 1; float min_diff = 100.0f;
     for (int i = 0; i < (int)NUM_VOLUME_STEPS; i++) {
-        float diff = s_volume_steps_pct[i] - target_pct;
-        if (diff < 0) diff = -diff;
-        if (diff < min_diff) {
-            min_diff = diff;
-            s_current_step_idx = i;
-        }
+        float diff = s_volume_steps_pct[i] - target_pct; if (diff < 0) diff = -diff;
+        if (diff < min_diff) { min_diff = diff; s_current_step_idx = i; }
     }
     s_current_volume_ml = s_max_volume_ml * (s_volume_steps_pct[s_current_step_idx] / 100.0f);
 
     if(!s_window) {
         s_window = window_create();
+        if (!s_window) return;
+
         window_set_click_config_provider(s_window, click_config_provider);
         window_set_window_handlers(s_window, (WindowHandlers) {
-            .load = window_load,
-            .appear = window_appear,
-            .disappear = window_disappear,
-            .unload = window_unload,
+            .load = window_load, .appear = window_appear,
+            .disappear = window_disappear, .unload = window_unload,
         });
     }
-    window_stack_push(s_window, true);
-}
-
-void portion_menu_destroy_safe(void) {
-    if (s_window && window_stack_contains_window(s_window)) {
-        window_stack_remove(s_window, false);
-    }
+    if (!window_stack_contains_window(s_window)) window_stack_push(s_window, true);
 }
