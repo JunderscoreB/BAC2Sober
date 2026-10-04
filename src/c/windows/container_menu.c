@@ -1,3 +1,6 @@
+// ============================================================================
+// File: src/windows/container_menu.c
+// ============================================================================
 #include <pebble.h>
 #include "container_menu.h"
 #include "portion_menu.h"
@@ -9,29 +12,38 @@
 #include "../core/ui_utils.h"
 
 extern void app_reset_idle_timer(void);
-extern void wizard_advance(void);
 
+#if !defined(PBL_PLATFORM_APLITE)
+extern void wizard_advance(void);
 extern int g_wizard_next_step;
 extern float g_wizard_vol;
 extern float g_wizard_orig_vol;
 extern float g_wizard_abv;
 extern DrinkShape g_wizard_shape;
+#endif
 
 static Window *s_window;
 static MenuLayer *s_menu_layer;
+
+void container_menu_remove_from_stack(void) {
+    if (s_window && window_stack_contains_window(s_window)) {
+        window_stack_remove(s_window, false);
+    }
+}
 
 #if !defined(PBL_PLATFORM_APLITE)
 static MenuIndex s_selected_index = {0, 0};
 static AppTimer *s_marquee_timer = NULL;
 static int s_marquee_offset = 0;
-static bool s_click_locked = false;
-
-static void unlock_click(void *data) { s_click_locked = false; }
 static void marquee_timer_callback(void *data) {
     s_marquee_offset += 3;
     if (s_menu_layer) layer_mark_dirty(menu_layer_get_layer(s_menu_layer));
     s_marquee_timer = app_timer_register(100, marquee_timer_callback, NULL);
 }
+
+static bool s_click_locked = false;
+static void unlock_click(void *data) { s_click_locked = false; }
+static void oom_pop_callback(void *data) { window_stack_pop(false); }
 #endif
 
 typedef struct {
@@ -196,15 +208,32 @@ static void select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *
     if (s_click_locked) return;
     s_click_locked = true; app_timer_register(300, unlock_click, NULL);
     #endif
+
     app_reset_idle_timer(); AppSettings *settings = storage_get_settings();
 
     if (cell_index->section == 0) {
         if (settings->last_custom_volume_ml > 0.0f && cell_index->row == 0) {
+            #if defined(PBL_PLATFORM_APLITE)
+            float v = settings->last_custom_volume_ml;
+            float abv = settings->last_custom_abv;
+            bool portions = settings->enable_portions;
+            if (s_window && window_stack_contains_window(s_window)) window_stack_remove(s_window, false);
+            if (portions) portion_menu_push(v, v, abv, SHAPE_CUSTOM, -1);
+            else abv_window_push(v, v, abv, SHAPE_CUSTOM);
+            #else
             g_wizard_vol = settings->last_custom_volume_ml; g_wizard_orig_vol = settings->last_custom_volume_ml;
             g_wizard_abv = settings->last_custom_abv; g_wizard_shape = SHAPE_CUSTOM;
             g_wizard_next_step = settings->enable_portions ? 1 : 2;
+            wizard_advance();
+            #endif
         } else {
+            #if defined(PBL_PLATFORM_APLITE)
+            if (s_window && window_stack_contains_window(s_window)) window_stack_remove(s_window, false);
+            custom_volume_window_push(355.0f, 5.0f);
+            #else
             g_wizard_next_step = 4;
+            wizard_advance();
+            #endif
         }
     } else {
         const DrinkContainer *selected; int discard_size;
@@ -212,12 +241,21 @@ static void select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *
         else if (cell_index->section == 2) selected = &get_beer_array(&discard_size)[cell_index->row];
         else selected = &get_wine_array(&discard_size)[cell_index->row];
 
+        #if defined(PBL_PLATFORM_APLITE)
+        float v = selected->volume_ml;
+        float abv = selected->default_abv;
+        DrinkShape shape = selected->shape;
+        bool portions = settings->enable_portions;
+        if (s_window && window_stack_contains_window(s_window)) window_stack_remove(s_window, false);
+        if (portions) portion_menu_push(v, v, abv, shape, -1);
+        else abv_window_push(v, v, abv, shape);
+        #else
         g_wizard_vol = selected->volume_ml; g_wizard_orig_vol = selected->volume_ml;
         g_wizard_abv = selected->default_abv; g_wizard_shape = selected->shape;
         g_wizard_next_step = settings->enable_portions ? 1 : 2;
+        wizard_advance();
+        #endif
     }
-
-    wizard_advance();
 }
 
 static void selection_changed_callback(struct MenuLayer *menu_layer, MenuIndex new_index, MenuIndex old_index, void *callback_context) {
@@ -236,7 +274,8 @@ static MenuLayerCallbacks s_menu_cbs = {
 
 static void window_appear(Window *window) {
     #if !defined(PBL_PLATFORM_APLITE)
-    s_click_locked = false; s_marquee_offset = 0;
+    s_click_locked = false;
+    s_marquee_offset = 0;
     s_marquee_timer = app_timer_register(100, marquee_timer_callback, NULL);
     #endif
 
@@ -255,15 +294,15 @@ static void window_disappear(Window *window) {
     touch_menu_unsubscribe();
 }
 
-static void oom_pop_callback(void *data) { window_stack_pop(false); }
-
 static void window_load(Window *window) {
     Layer *window_layer = window_get_root_layer(window); GRect bounds = layer_get_bounds(window_layer);
     window_set_background_color(window, theme_bg());
 
     s_menu_layer = menu_layer_create(bounds);
     if (!s_menu_layer) {
+        #if !defined(PBL_PLATFORM_APLITE)
         app_timer_register(10, oom_pop_callback, NULL);
+        #endif
         return;
     }
 
@@ -272,14 +311,8 @@ static void window_load(Window *window) {
     layer_add_child(window_layer, menu_layer_get_layer(s_menu_layer));
 }
 
-static void destroy_window_cb(void *data) { window_destroy((Window*)data); }
-
 static void window_unload(Window *window) {
     if (s_menu_layer) { menu_layer_destroy(s_menu_layer); s_menu_layer = NULL; }
-    if (window == s_window) {
-        s_window = NULL;
-        app_timer_register(50, destroy_window_cb, window);
-    }
 }
 
 void container_menu_push(void) {
@@ -292,5 +325,10 @@ void container_menu_push(void) {
             .disappear = window_disappear, .unload = window_unload,
         });
     }
+
+    #if defined(PBL_PLATFORM_APLITE)
+    window_stack_push(s_window, false);
+    #else
     if (!window_stack_contains_window(s_window)) window_stack_push(s_window, true);
+    #endif
 }

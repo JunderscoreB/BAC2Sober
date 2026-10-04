@@ -1,3 +1,6 @@
+// ============================================================================
+// File: src/windows/portion_menu.c
+// ============================================================================
 #include <pebble.h>
 #include "portion_menu.h"
 #include "abv_window.h"
@@ -5,13 +8,15 @@
 #include "../core/touch_menu.h"
 
 extern void app_reset_idle_timer(void);
-extern void wizard_advance(void);
 
+#if !defined(PBL_PLATFORM_APLITE)
+extern void wizard_advance(void);
 extern int g_wizard_next_step;
 extern float g_wizard_vol;
 extern float g_wizard_orig_vol;
 extern float g_wizard_abv;
 extern DrinkShape g_wizard_shape;
+#endif
 
 static const float s_volume_steps_pct[] = {
     10.0f, 20.0f, 25.0f, 30.0f, 33.3333f, 40.0f, 50.0f,
@@ -20,11 +25,17 @@ static const float s_volume_steps_pct[] = {
 #define NUM_VOLUME_STEPS (sizeof(s_volume_steps_pct) / sizeof(s_volume_steps_pct[0]))
 
 static Window *s_window;
-static TextLayer *s_portion_text_layer;
+static Layer *s_canvas_layer;
 
 #if !defined(PBL_PLATFORM_APLITE)
-static Layer *s_canvas_layer;
+static TextLayer *s_portion_text_layer;
 #endif
+
+void portion_menu_remove_from_stack(void) {
+    if (s_window && window_stack_contains_window(s_window)) {
+        window_stack_remove(s_window, false);
+    }
+}
 
 static float s_max_volume_ml;
 static float s_current_volume_ml;
@@ -33,12 +44,10 @@ static float s_default_abv;
 static DrinkShape s_shape;
 static int s_edit_drink_idx = -1;
 
+#if !defined(PBL_PLATFORM_APLITE)
 static bool s_click_locked = false;
 static void unlock_click(void *data) { s_click_locked = false; }
-
-#if defined(PBL_TOUCH)
-static uint16_t s_touch_repeat_count = 0;
-#endif
+static void oom_pop_callback(void *data) { window_stack_pop(false); }
 
 static void update_text_layer(void) {
     static char s_buffer[48]; AppSettings *settings = storage_get_settings();
@@ -47,20 +56,46 @@ static void update_text_layer(void) {
     int vol_ml = (int)(s_current_volume_ml + 0.5f);
     int oz_tenths = (vol_ml * 10000 + 14786) / 29573;
 
-    #if defined(PBL_PLATFORM_APLITE)
-    if (settings->use_metric_volume) snprintf(s_buffer, sizeof(s_buffer), "  +  \n%d%%\n%d ml\n  -  ", percent, vol_ml);
-    else snprintf(s_buffer, sizeof(s_buffer), "  +  \n%d%%\n%d.%d oz\n  -  ", percent, oz_tenths / 10, oz_tenths % 10);
-    #else
     if (settings->use_metric_volume) snprintf(s_buffer, sizeof(s_buffer), "%d%% - %d ml", percent, vol_ml);
     else snprintf(s_buffer, sizeof(s_buffer), "%d%% - %d.%d oz", percent, oz_tenths / 10, oz_tenths % 10);
-    #endif
 
     text_layer_set_text(s_portion_text_layer, s_buffer);
 }
+#endif
 
-#if !defined(PBL_PLATFORM_APLITE)
 static void canvas_update_proc(Layer *layer, GContext *ctx) {
-    GRect bounds = layer_get_bounds(layer); int cx = bounds.size.w / 2;
+    GRect bounds = layer_get_bounds(layer);
+
+    #if defined(PBL_PLATFORM_APLITE)
+    graphics_context_set_text_color(ctx, theme_text());
+
+    char pct_buffer[16];
+    int percent = (int)(s_volume_steps_pct[s_current_step_idx] + 0.5f);
+    snprintf(pct_buffer, sizeof(pct_buffer), "%d%%", percent);
+
+    char vol_buffer[32];
+    AppSettings *settings = storage_get_settings();
+    float oz = (s_current_volume_ml / 29.5735f) + 0.05f;
+    int oz_w = (int)oz;
+    int oz_d = (int)(oz * 10.0f) % 10;
+
+    if (settings->use_metric_volume) {
+        snprintf(vol_buffer, sizeof(vol_buffer), "%d ml", (int)(s_current_volume_ml + 0.5f));
+    } else {
+        snprintf(vol_buffer, sizeof(vol_buffer), "%d.%d oz", oz_w, oz_d);
+    }
+
+    int center_y = bounds.size.h / 2;
+
+    graphics_draw_text(ctx, pct_buffer, fonts_get_system_font(FONT_KEY_BITHAM_42_BOLD),
+                       GRect(0, center_y - 45, bounds.size.w, 50),
+                       GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+
+    graphics_draw_text(ctx, vol_buffer, fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD),
+                       GRect(0, center_y + 5, bounds.size.w, 40),
+                       GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+    #else
+    int cx = bounds.size.w / 2;
     int cy = PBL_IF_ROUND_ELSE((bounds.size.h / 2) - 20, (bounds.size.h - 40) / 2);
     float fill_ratio = s_current_volume_ml / s_max_volume_ml;
 
@@ -152,16 +187,19 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
     else if (s_shape == SHAPE_SHOT) graphics_draw_line(ctx, GPoint(cx - w/2, y_offset), GPoint(cx + w/2, y_offset));
 
     gpath_destroy(path);
+    #endif
 }
-#endif
 
 static void up_click_handler(ClickRecognizerRef recognizer, void *context) {
     app_reset_idle_timer();
     if (s_current_step_idx < (int)NUM_VOLUME_STEPS - 1) {
         s_current_step_idx++;
         s_current_volume_ml = s_max_volume_ml * (s_volume_steps_pct[s_current_step_idx] / 100.0f);
+
+        #if defined(PBL_PLATFORM_APLITE)
+        if (s_canvas_layer) layer_mark_dirty(s_canvas_layer);
+        #else
         update_text_layer();
-        #if !defined(PBL_PLATFORM_APLITE)
         if (s_canvas_layer) layer_mark_dirty(s_canvas_layer);
         #endif
     }
@@ -172,27 +210,42 @@ static void down_click_handler(ClickRecognizerRef recognizer, void *context) {
     if (s_current_step_idx > 0) {
         s_current_step_idx--;
         s_current_volume_ml = s_max_volume_ml * (s_volume_steps_pct[s_current_step_idx] / 100.0f);
+
+        #if defined(PBL_PLATFORM_APLITE)
+        if (s_canvas_layer) layer_mark_dirty(s_canvas_layer);
+        #else
         update_text_layer();
-        #if !defined(PBL_PLATFORM_APLITE)
         if (s_canvas_layer) layer_mark_dirty(s_canvas_layer);
         #endif
     }
 }
 
 static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
+    #if !defined(PBL_PLATFORM_APLITE)
     if (s_click_locked) return;
     s_click_locked = true; app_timer_register(300, unlock_click, NULL);
+    #endif
     app_reset_idle_timer();
 
     if (s_edit_drink_idx >= 0) {
+        #if !defined(PBL_PLATFORM_APLITE)
+        if (s_edit_drink_idx >= storage_get_num_drinks()) {
+            window_stack_pop(true);
+            return;
+        }
+        #endif
         Drink *drinks = storage_get_drinks();
         drinks[s_edit_drink_idx].volume_ml = s_current_volume_ml;
         storage_save_drinks(drinks, storage_get_num_drinks());
         window_stack_pop(true);
     } else {
+        #if defined(PBL_PLATFORM_APLITE)
+        abv_window_push(s_current_volume_ml, s_max_volume_ml, s_default_abv, s_shape);
+        #else
         g_wizard_vol = s_current_volume_ml;
         g_wizard_next_step = 2; // Route natively
         wizard_advance();
+        #endif
     }
 }
 
@@ -230,7 +283,9 @@ static void touch_handler(const TouchEvent *event, void *context) {
 #endif
 
 static void window_appear(Window *window) {
+    #if !defined(PBL_PLATFORM_APLITE)
     s_click_locked = false;
+    #endif
     app_reset_idle_timer();
     #if defined(PBL_TOUCH)
     if (touch_service_is_enabled()) touch_service_subscribe(touch_handler, NULL);
@@ -243,26 +298,21 @@ static void window_disappear(Window *window) {
     #endif
 }
 
-static void oom_pop_callback(void *data) { window_stack_pop(false); }
-
 static void window_load(Window *window) {
     Layer *window_layer = window_get_root_layer(window); GRect bounds = layer_get_bounds(window_layer);
     window_set_background_color(window, theme_bg());
 
-    #if !defined(PBL_PLATFORM_APLITE)
     s_canvas_layer = layer_create(bounds);
     if (s_canvas_layer) {
         layer_set_update_proc(s_canvas_layer, canvas_update_proc); layer_add_child(window_layer, s_canvas_layer);
     }
-    #endif
 
+    #if !defined(PBL_PLATFORM_APLITE)
     int text_y = PBL_IF_ROUND_ELSE((bounds.size.h / 2) + 30, bounds.size.h - 40);
     int text_h = 30;
 
-    // FIX: Apply dynamic text sizing matching the log editor
     GFont font = fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD);
 
-    #if !defined(PBL_PLATFORM_APLITE)
     PreferredContentSize size = preferred_content_size();
     if (size == PreferredContentSizeLarge || size == PreferredContentSizeExtraLarge) {
         font = fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD);
@@ -271,10 +321,6 @@ static void window_load(Window *window) {
         font = fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD);
         text_y += 5; text_h = 25;
     }
-    #else
-    text_y = (bounds.size.h / 2) - 60;
-    text_h = 120;
-    #endif
 
     s_portion_text_layer = text_layer_create(GRect(0, text_y, bounds.size.w, text_h));
 
@@ -290,19 +336,14 @@ static void window_load(Window *window) {
     layer_add_child(window_layer, text_layer_get_layer(s_portion_text_layer));
 
     update_text_layer();
+    #endif
 }
 
-static void destroy_window_cb(void *data) { window_destroy((Window*)data); }
-
 static void window_unload(Window *window) {
-    #if !defined(PBL_PLATFORM_APLITE)
     if (s_canvas_layer) { layer_destroy(s_canvas_layer); s_canvas_layer = NULL; }
-    #endif
+    #if !defined(PBL_PLATFORM_APLITE)
     if (s_portion_text_layer) { text_layer_destroy(s_portion_text_layer); s_portion_text_layer = NULL; }
-    if (window == s_window) {
-        s_window = NULL;
-        app_timer_register(50, destroy_window_cb, window);
-    }
+    #endif
 }
 
 void portion_menu_push(float max_volume_ml, float current_volume_ml, float default_abv, DrinkShape shape, int edit_drink_idx) {
@@ -326,5 +367,16 @@ void portion_menu_push(float max_volume_ml, float current_volume_ml, float defau
             .disappear = window_disappear, .unload = window_unload,
         });
     }
+
+    #if defined(PBL_PLATFORM_APLITE)
+    window_stack_push(s_window, false);
+    #else
     if (!window_stack_contains_window(s_window)) window_stack_push(s_window, true);
+    #endif
+}
+
+void portion_menu_destroy_safe(void) {
+    if (s_window && window_stack_contains_window(s_window)) {
+        window_stack_remove(s_window, false);
+    }
 }

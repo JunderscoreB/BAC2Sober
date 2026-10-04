@@ -13,6 +13,9 @@
 
 typedef enum { EDIT_MODE_TIME, EDIT_MODE_ABV, EDIT_MODE_VOL } EditMode;
 
+static Window *s_main_window = NULL;
+
+#if !defined(PBL_PLATFORM_APLITE)
 // --- GLOBAL WIZARD ROUTER STATE ---
 int g_wizard_next_step = 0;
 float g_wizard_vol = 0;
@@ -21,8 +24,8 @@ float g_wizard_abv = 0;
 DrinkShape g_wizard_shape = SHAPE_CAN;
 
 static void wizard_advance_cb(void *data) {
-    window_stack_pop(false);
     int step = g_wizard_next_step;
+    if (step == 0) return;
     g_wizard_next_step = 0;
 
     if (step == 1) portion_menu_push(g_wizard_orig_vol, g_wizard_vol, g_wizard_abv, g_wizard_shape, -1);
@@ -35,12 +38,16 @@ void wizard_advance(void) {
     app_timer_register(50, wizard_advance_cb, NULL);
 }
 // ----------------------------------
+#endif
 
-static Window *s_main_window;
 static MenuLayer *s_menu_layer;
+#if defined(PBL_PLATFORM_APLITE)
+static Layer *s_dashboard_layer;
+#else
 static TextLayer *s_bac_layer;
 static TextLayer *s_sober_layer;
 static TextLayer *s_bac_title_layer;
+#endif
 
 static Window *s_edit_window;
 static MenuLayer *s_edit_menu_layer;
@@ -66,14 +73,20 @@ static float s_current_bac = 0.0f;
 static time_t s_zero_time = 0;
 static time_t s_target_time = 0;
 static time_t s_last_pushed_sober_time = 0;
+#if !defined(PBL_PLATFORM_APLITE)
 static time_t s_last_scheduled_wakeup = 0;
+#endif
 static time_t s_last_interaction_time = 0;
 
 static MenuLayerCallbacks s_main_menu_cbs;
 static MenuLayerCallbacks s_edit_menu_cbs;
 
+#if !defined(PBL_PLATFORM_APLITE)
 static bool s_click_locked = false;
 static void unlock_click(void *data) { s_click_locked = false; }
+#endif
+
+static void oom_pop_callback(void *data) { window_stack_pop(false); }
 
 Window* main_window_get_window(void) { return s_main_window; }
 void app_reset_idle_timer(void) { s_last_interaction_time = time(NULL); }
@@ -92,16 +105,17 @@ static void sort_drinks(void) {
     }
 }
 
-#if !defined(PBL_PLATFORM_APLITE)
 static void send_timeline_pin_update(time_t sober_timestamp, float target_bac) {
     DictionaryIterator *iter;
-    if (app_message_outbox_begin(&iter) == APP_MSG_OK) {
+    AppMessageResult result = app_message_outbox_begin(&iter);
+    if (result == APP_MSG_OK) {
         dict_write_uint32(iter, MESSAGE_KEY_SOBER_TIME, (uint32_t)sober_timestamp);
         dict_write_uint32(iter, MESSAGE_KEY_TARGET_BAC, (uint32_t)(target_bac * 100.0f + 0.5f));
         app_message_outbox_send();
     }
 }
 
+#if !defined(PBL_PLATFORM_APLITE)
 static void delayed_pin_push_callback(void *data) {
     AppSettings *settings = storage_get_settings();
     if (s_target_time > time(NULL)) send_timeline_pin_update(s_target_time, settings->target_bac);
@@ -110,9 +124,15 @@ static void delayed_pin_push_callback(void *data) {
 
 static void update_bac_calculations(void) {
     int num_drinks = storage_get_num_drinks();
+    #if defined(PBL_PLATFORM_APLITE)
+    wakeup_cancel_all();
+    #endif
+
     if (num_drinks == 0) {
         s_current_bac = 0.0f; s_zero_time = 0; s_target_time = 0;
+        #if !defined(PBL_PLATFORM_APLITE)
         if (s_last_scheduled_wakeup != 0) { wakeup_cancel_all(); s_last_scheduled_wakeup = 0; }
+        #endif
         return;
     }
 
@@ -138,20 +158,30 @@ static void update_bac_calculations(void) {
         float hours_to_target = (s_current_bac - settings->target_bac) / METABOLISM_RATE_PER_HOUR;
         s_target_time = current_time + (time_t)(hours_to_target * 3600.0f);
 
-        if (s_target_time > current_time && s_target_time != s_last_scheduled_wakeup) {
+        #if defined(PBL_PLATFORM_APLITE)
+        if (s_target_time > current_time) {
+            wakeup_schedule(s_target_time, 0, true);
+        }
+        if (s_target_time != s_last_pushed_sober_time && s_target_time > current_time) {
+            send_timeline_pin_update(s_target_time, settings->target_bac);
+            s_last_pushed_sober_time = s_target_time;
+        }
+        #else
+        if (s_target_time > current_time && (s_last_scheduled_wakeup == 0 || abs((int)(s_target_time - s_last_scheduled_wakeup)) > 60)) {
             wakeup_cancel_all(); wakeup_schedule(s_target_time, 0, true);
             s_last_scheduled_wakeup = s_target_time;
         }
 
-        #if !defined(PBL_PLATFORM_APLITE)
-        if (s_target_time != s_last_pushed_sober_time && s_target_time > current_time) {
+        if (s_target_time > current_time && (s_last_pushed_sober_time == 0 || abs((int)(s_target_time - s_last_pushed_sober_time)) > 60)) {
             app_timer_register(1000, delayed_pin_push_callback, NULL);
             s_last_pushed_sober_time = s_target_time;
         }
         #endif
     } else {
         s_target_time = 0;
+        #if !defined(PBL_PLATFORM_APLITE)
         if (s_last_scheduled_wakeup != 0) { wakeup_cancel_all(); s_last_scheduled_wakeup = 0; }
+        #endif
     }
 }
 
@@ -183,15 +213,65 @@ static void trigger_big_time_window_update(void) {
     AppSettings *settings = storage_get_settings();
     #if !defined(PBL_PLATFORM_APLITE)
     GColor current_time_color = get_bac_color(s_current_bac);
-    #else
-    GColor current_time_color = theme_text();
-    #endif
-
     if (settings->target_bac >= 0.0f) big_time_window_update(s_target_time, "Target BAC Time", current_time_color);
     else big_time_window_update(s_zero_time, "Sober By Time", current_time_color);
+    #else
+    if (settings->target_bac >= 0.0f) big_time_window_update(s_target_time, "Target BAC Time");
+    else big_time_window_update(s_zero_time, "Sober By Time");
+    #endif
 }
 
+#if defined(PBL_PLATFORM_APLITE)
+static void dashboard_update_proc(Layer *layer, GContext *ctx) {
+    GRect bounds = layer_get_bounds(layer);
+
+    char bac_buffer[16];
+    int bac_whole = (int)s_current_bac;
+    int bac_thousands = (int)(s_current_bac * 1000.0f) % 1000;
+    snprintf(bac_buffer, sizeof(bac_buffer), "%d.%03d ", bac_whole, bac_thousands);
+
+    char sober_buffer[32];
+    AppSettings *settings = storage_get_settings();
+    if (settings->target_bac >= 0.0f) {
+        if (s_target_time > 0) {
+            struct tm *sober_tm = localtime(&s_target_time);
+            if (sober_tm) {
+                if (settings->target_bac > 0.001f) strftime(sober_buffer, sizeof(sober_buffer), "Target by %H:%M", sober_tm);
+                else strftime(sober_buffer, sizeof(sober_buffer), "Sober by %H:%M", sober_tm);
+            }
+        } else {
+            if (settings->target_bac > 0.001f) snprintf(sober_buffer, sizeof(sober_buffer), "Target Reached");
+            else snprintf(sober_buffer, sizeof(sober_buffer), "Sober");
+        }
+    } else {
+        if (s_zero_time > time(NULL)) {
+            struct tm *sober_tm = localtime(&s_zero_time);
+            if (sober_tm) strftime(sober_buffer, sizeof(sober_buffer), "Sober by %H:%M", sober_tm);
+        } else snprintf(sober_buffer, sizeof(sober_buffer), "Sober");
+    }
+
+    graphics_context_set_text_color(ctx, theme_text());
+
+    int bac_h = 35;
+    int title_y = 12;
+    int title_w = 45;
+    int sober_y = 40;
+
+    graphics_draw_text(ctx, "BAC:", fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
+                       GRect(5, title_y, title_w, 30), GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+
+    graphics_draw_text(ctx, bac_buffer, fonts_get_system_font(FONT_KEY_BITHAM_30_BLACK),
+                       GRect(0, 5, bounds.size.w, bac_h), GTextOverflowModeTrailingEllipsis, GTextAlignmentRight, NULL);
+
+    graphics_draw_text(ctx, sober_buffer, fonts_get_system_font(FONT_KEY_GOTHIC_24),
+                       GRect(0, sober_y, bounds.size.w, 30), GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+}
+#endif
+
 static void update_dashboard_text(void) {
+    #if defined(PBL_PLATFORM_APLITE)
+    if (s_dashboard_layer) layer_mark_dirty(s_dashboard_layer);
+    #else
     if (!s_menu_layer) return;
 
     static char s_bac_buffer[16];
@@ -211,8 +291,13 @@ static void update_dashboard_text(void) {
         if (s_target_time > 0) {
             struct tm *sober_tm = localtime(&s_target_time);
             if (sober_tm) {
-                if (settings->target_bac > 0.001f) strftime(s_sober_buffer, sizeof(s_sober_buffer), "Target by %H:%M", sober_tm);
-                else strftime(s_sober_buffer, sizeof(s_sober_buffer), "Sober by %H:%M", sober_tm);
+                if (clock_is_24h_style()) {
+                    if (settings->target_bac > 0.001f) strftime(s_sober_buffer, sizeof(s_sober_buffer), "Target by %H:%M", sober_tm);
+                    else strftime(s_sober_buffer, sizeof(s_sober_buffer), "Sober by %H:%M", sober_tm);
+                } else {
+                    if (settings->target_bac > 0.001f) strftime(s_sober_buffer, sizeof(s_sober_buffer), "Target by %I:%M%p", sober_tm);
+                    else strftime(s_sober_buffer, sizeof(s_sober_buffer), "Sober by %I:%M%p", sober_tm);
+                }
             }
         } else {
             if (settings->target_bac > 0.001f) snprintf(s_sober_buffer, sizeof(s_sober_buffer), "Target Reached");
@@ -221,18 +306,16 @@ static void update_dashboard_text(void) {
     } else {
         if (s_zero_time > time(NULL)) {
             struct tm *sober_tm = localtime(&s_zero_time);
-            if (sober_tm) strftime(s_sober_buffer, sizeof(s_sober_buffer), "Sober by %H:%M", sober_tm);
+            if (sober_tm) {
+                if (clock_is_24h_style()) strftime(s_sober_buffer, sizeof(s_sober_buffer), "Sober by %H:%M", sober_tm);
+                else strftime(s_sober_buffer, sizeof(s_sober_buffer), "Sober by %I:%M%p", sober_tm);
+            }
         } else snprintf(s_sober_buffer, sizeof(s_sober_buffer), "Sober");
     }
 
     if (s_bac_layer) {
-        #if !defined(PBL_PLATFORM_APLITE)
         GColor header_bg = get_bac_color(s_current_bac);
         GColor header_text = gcolor_legible_over(header_bg);
-        #else
-        GColor header_bg = theme_bg();
-        GColor header_text = theme_text();
-        #endif
 
         if (s_bac_title_layer) {
             #if defined(PBL_ROUND)
@@ -253,6 +336,7 @@ static void update_dashboard_text(void) {
             text_layer_set_text(s_sober_layer, s_sober_buffer);
         }
     }
+    #endif
 }
 
 static void tick_handler(struct tm *tick_time, TimeUnits units_changed) {
@@ -276,35 +360,29 @@ static void update_value_edit_text(void) {
 
     if (s_current_edit_mode == EDIT_MODE_TIME) {
         struct tm *tick_time = localtime((time_t*)&d->timestamp);
-        if (tick_time) strftime(s_val_buf, sizeof(s_val_buf), "%H:%M", tick_time);
+        if (tick_time) {
+            if (clock_is_24h_style()) strftime(s_val_buf, sizeof(s_val_buf), "%H:%M", tick_time);
+            else strftime(s_val_buf, sizeof(s_val_buf), "%I:%M%p", tick_time);
+        }
     } else if (s_current_edit_mode == EDIT_MODE_ABV) {
         int abv_tenths = (int)(d->abv * 1000.0f + 0.5f);
         snprintf(s_val_buf, sizeof(s_val_buf), "%d.%d%%", abv_tenths / 10, abv_tenths % 10);
     } else if (s_current_edit_mode == EDIT_MODE_VOL) {
         AppSettings *settings = storage_get_settings();
-        int vol_ml = (int)(d->volume_ml + 0.5f);
-        int oz_tenths = (vol_ml * 10000 + 14786) / 29573;
-
-        if (settings->use_metric_volume) snprintf(s_val_buf, sizeof(s_val_buf), "%dml (%d.%doz)", vol_ml, oz_tenths / 10, oz_tenths % 10);
-        else snprintf(s_val_buf, sizeof(s_val_buf), "%d.%doz (%dml)", oz_tenths / 10, oz_tenths % 10, vol_ml);
+        float oz = (d->volume_ml / 29.5735f) + 0.05f;
+        int oz_w = (int)oz; int oz_d = (int)(oz * 10.0f) % 10;
+        if (settings->use_metric_volume) snprintf(s_val_buf, sizeof(s_val_buf), "%dml (%d.%doz)", (int)d->volume_ml, oz_w, oz_d);
+        else snprintf(s_val_buf, sizeof(s_val_buf), "%d.%doz (%dml)", oz_w, oz_d, (int)d->volume_ml);
     }
     text_layer_set_text(s_value_edit_layer, s_val_buf);
 }
-
-#if defined(PBL_TOUCH)
-static uint16_t s_ve_touch_repeat_count = 0;
-#endif
 
 static void value_edit_up_click_handler(ClickRecognizerRef recognizer, void *context) {
     app_reset_idle_timer();
     if (s_editing_drink_idx < 0 || s_editing_drink_idx >= storage_get_num_drinks()) return;
     Drink *d = &storage_get_drinks()[s_editing_drink_idx];
 
-    uint16_t repeats = 0;
-    if (recognizer) repeats = click_number_of_clicks_counted(recognizer);
-    #if defined(PBL_TOUCH)
-    else repeats = s_ve_touch_repeat_count;
-    #endif
+    uint16_t repeats = recognizer ? click_number_of_clicks_counted(recognizer) : 0;
 
     if (s_current_edit_mode == EDIT_MODE_TIME) {
         time_t remainder = d->timestamp % 300;
@@ -325,11 +403,7 @@ static void value_edit_down_click_handler(ClickRecognizerRef recognizer, void *c
     if (s_editing_drink_idx < 0 || s_editing_drink_idx >= storage_get_num_drinks()) return;
     Drink *d = &storage_get_drinks()[s_editing_drink_idx];
 
-    uint16_t repeats = 0;
-    if (recognizer) repeats = click_number_of_clicks_counted(recognizer);
-    #if defined(PBL_TOUCH)
-    else repeats = s_ve_touch_repeat_count;
-    #endif
+    uint16_t repeats = recognizer ? click_number_of_clicks_counted(recognizer) : 0;
 
     if (s_current_edit_mode == EDIT_MODE_TIME) {
         time_t remainder = d->timestamp % 300;
@@ -347,7 +421,11 @@ static void value_edit_down_click_handler(ClickRecognizerRef recognizer, void *c
 static void value_edit_select_click_handler(ClickRecognizerRef recognizer, void *context) {
     app_reset_idle_timer(); sort_drinks();
     storage_save_drinks(storage_get_drinks(), storage_get_num_drinks());
+    #if defined(PBL_PLATFORM_APLITE)
+    window_stack_pop(false);
+    #else
     window_stack_pop(true);
+    #endif
 }
 
 static void value_edit_click_config_provider(void *context) {
@@ -356,83 +434,13 @@ static void value_edit_click_config_provider(void *context) {
     window_single_click_subscribe(BUTTON_ID_SELECT, value_edit_select_click_handler);
 }
 
-#if defined(PBL_TOUCH)
-static int16_t s_ve_touch_start_x = 0; static int16_t s_ve_touch_start_y = 0;
-static int16_t s_ve_touch_last_y = 0; static bool s_ve_is_drag = false;
-static AppTimer *s_ve_touch_hold_timer = NULL;
-static int16_t s_ve_current_touch_y = -1;
-
-static void ve_touch_hold_timer_cb(void *data) {
-    s_ve_touch_hold_timer = NULL;
-    if (s_ve_current_touch_y < 0) return;
-
-    Layer *window_layer = window_get_root_layer(s_value_edit_window);
-    GRect bounds = layer_get_bounds(window_layer);
-
-    bool triggered = false;
-    if (s_ve_current_touch_y < bounds.size.h / 3) {
-        s_ve_touch_repeat_count++; value_edit_up_click_handler(NULL, NULL); triggered = true;
-    } else if (s_ve_current_touch_y > (bounds.size.h * 2) / 3) {
-        s_ve_touch_repeat_count++; value_edit_down_click_handler(NULL, NULL); triggered = true;
-    }
-
-    if (triggered) {
-        s_ve_touch_hold_timer = app_timer_register(150, ve_touch_hold_timer_cb, NULL);
-    }
-}
-
-static void value_edit_touch_handler(const TouchEvent *event, void *context) {
-    app_reset_idle_timer();
-    if (event->type == TouchEvent_Touchdown) {
-        s_ve_touch_start_x = event->x; s_ve_touch_start_y = event->y; s_ve_touch_last_y = event->y;
-        s_ve_current_touch_y = event->y;
-        s_ve_touch_repeat_count = 0; s_ve_is_drag = false;
-        if (s_ve_touch_hold_timer) { app_timer_cancel(s_ve_touch_hold_timer); s_ve_touch_hold_timer = NULL; }
-    } else if (event->type == TouchEvent_PositionUpdate) {
-        s_ve_current_touch_y = event->y;
-        if (!s_ve_is_drag && abs(event->y - s_ve_touch_start_y) > 10) s_ve_is_drag = true;
-        if (s_ve_is_drag) {
-            int16_t delta = event->y - s_ve_touch_last_y;
-            if (delta < -15) { s_ve_touch_repeat_count++; value_edit_up_click_handler(NULL, NULL); s_ve_touch_last_y = event->y; }
-            else if (delta > 15) { s_ve_touch_repeat_count++; value_edit_down_click_handler(NULL, NULL); s_ve_touch_last_y = event->y; }
-
-            Layer *window_layer = window_get_root_layer(s_value_edit_window);
-            GRect bounds = layer_get_bounds(window_layer);
-            if (!s_ve_touch_hold_timer && (event->y < bounds.size.h / 3 || event->y > (bounds.size.h * 2) / 3)) {
-                s_ve_touch_hold_timer = app_timer_register(150, ve_touch_hold_timer_cb, NULL);
-            } else if (s_ve_touch_hold_timer && event->y >= bounds.size.h / 3 && event->y <= (bounds.size.h * 2) / 3) {
-                app_timer_cancel(s_ve_touch_hold_timer); s_ve_touch_hold_timer = NULL;
-            }
-        }
-    } else if (event->type == TouchEvent_Liftoff) {
-        s_ve_current_touch_y = -1;
-        if (s_ve_touch_hold_timer) { app_timer_cancel(s_ve_touch_hold_timer); s_ve_touch_hold_timer = NULL; }
-
-        int16_t dx = event->x - s_ve_touch_start_x; int16_t dy = event->y - s_ve_touch_start_y;
-        if (abs(dx) > 40 && abs(dx) > abs(dy)) {
-            AppSettings *settings = storage_get_settings();
-            bool is_back = settings->right_handed_mode ? (dx > 40) : (dx < -40);
-            if (is_back) { window_stack_pop(true); return; }
-        }
-        if (!s_ve_is_drag) value_edit_select_click_handler(NULL, NULL);
-    }
-}
-#endif
-
 static void value_edit_window_appear(Window *window) {
     app_reset_idle_timer();
-    #if defined(PBL_TOUCH)
-    if (touch_service_is_enabled()) touch_service_subscribe(value_edit_touch_handler, NULL);
-    #endif
 }
 
 static void value_edit_window_disappear(Window *window) {
-    #if defined(PBL_TOUCH)
-    if (touch_service_is_enabled()) touch_service_unsubscribe();
-    #endif
+    // Intentionally empty
 }
-
-static void oom_pop_callback(void *data) { window_stack_pop(false); }
 
 static void value_edit_window_load(Window *window) {
     Layer *window_layer = window_get_root_layer(window); GRect bounds = layer_get_bounds(window_layer);
@@ -483,15 +491,9 @@ static void value_edit_window_load(Window *window) {
     update_value_edit_text();
 }
 
-static void destroy_window_cb(void *data) { window_destroy((Window*)data); }
-
 static void value_edit_window_unload(Window *window) {
     if (s_value_edit_title_layer) { text_layer_destroy(s_value_edit_title_layer); s_value_edit_title_layer = NULL; }
     if (s_value_edit_layer) { text_layer_destroy(s_value_edit_layer); s_value_edit_layer = NULL; }
-    if (window == s_value_edit_window) {
-        s_value_edit_window = NULL;
-        app_timer_register(50, destroy_window_cb, window);
-    }
 }
 
 static int16_t edit_get_cell_height_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *data) { return ui_get_dynamic_cell_height(); }
@@ -512,7 +514,10 @@ static void edit_draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuI
     switch (cell_index->row) {
         case 0: {
             struct tm *tick_time = localtime((time_t*)&d->timestamp);
-            if (tick_time) strftime(subtitle, sizeof(subtitle), "%H:%M", tick_time);
+            if (tick_time) {
+                if (clock_is_24h_style()) strftime(subtitle, sizeof(subtitle), "%H:%M", tick_time);
+                else strftime(subtitle, sizeof(subtitle), "%I:%M%p", tick_time);
+            }
             ui_draw_dynamic_menu_cell(ctx, cell_layer, "Time Finished", subtitle, is_selected, marquee); break;
         }
         case 1: {
@@ -521,18 +526,18 @@ static void edit_draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuI
             ui_draw_dynamic_menu_cell(ctx, cell_layer, "Edit ABV", subtitle, is_selected, marquee); break;
         }
         case 2: {
-            int vol_ml = (int)(d->volume_ml + 0.5f);
-            int oz_tenths = (vol_ml * 10000 + 14786) / 29573;
-            if (settings->use_metric_volume) snprintf(subtitle, sizeof(subtitle), "%d ml (%d.%d oz)", vol_ml, oz_tenths / 10, oz_tenths % 10);
-            else snprintf(subtitle, sizeof(subtitle), "%d.%d oz (%d ml)", oz_tenths / 10, oz_tenths % 10, vol_ml);
+            float oz = (d->volume_ml / 29.5735f) + 0.05f;
+            int oz_w = (int)oz; int oz_d = (int)(oz * 10.0f) % 10;
+            if (settings->use_metric_volume) snprintf(subtitle, sizeof(subtitle), "%d ml (%d.%d oz)", (int)d->volume_ml, oz_w, oz_d);
+            else snprintf(subtitle, sizeof(subtitle), "%d.%d oz (%d ml)", oz_w, oz_d, (int)d->volume_ml);
             ui_draw_dynamic_menu_cell(ctx, cell_layer, "Edit Volume", subtitle, is_selected, marquee); break;
         }
         case 3: {
             float max_vol = d->original_volume_ml > 0 ? d->original_volume_ml : d->volume_ml;
-            int vol_ml = (int)(max_vol + 0.5f);
-            int oz_tenths = (vol_ml * 10000 + 14786) / 29573;
-            if (settings->use_metric_volume) snprintf(subtitle, sizeof(subtitle), "Out of %d ml container", vol_ml);
-            else snprintf(subtitle, sizeof(subtitle), "Out of %d.%d oz container", oz_tenths / 10, oz_tenths % 10);
+            float oz = (max_vol / 29.5735f) + 0.05f;
+            int oz_w = (int)oz; int oz_d = (int)(oz * 10.0f) % 10;
+            if (settings->use_metric_volume) snprintf(subtitle, sizeof(subtitle), "Out of %d ml container", (int)max_vol);
+            else snprintf(subtitle, sizeof(subtitle), "Out of %d.%d oz container", oz_w, oz_d);
             ui_draw_dynamic_menu_cell(ctx, cell_layer, "Edit Portion", subtitle, is_selected, marquee); break;
         }
         case 4: ui_draw_dynamic_menu_cell(ctx, cell_layer, "Delete Drink", "Remove from log", is_selected, marquee); break;
@@ -540,8 +545,10 @@ static void edit_draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuI
 }
 
 static void edit_select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *data) {
+    #if !defined(PBL_PLATFORM_APLITE)
     if (s_click_locked) return;
     s_click_locked = true; app_timer_register(300, unlock_click, NULL);
+    #endif
 
     app_reset_idle_timer();
     Drink *drinks = storage_get_drinks();
@@ -561,7 +568,12 @@ static void edit_select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, v
         case 4: {
             for (int i = s_editing_drink_idx; i < num_drinks - 1; i++) drinks[i] = drinks[i + 1];
             storage_save_drinks(drinks, num_drinks - 1);
+            #if defined(PBL_PLATFORM_APLITE)
+            storage_load_drinks();
+            window_stack_pop(false);
+            #else
             window_stack_pop(true);
+            #endif
             return;
         }
     }
@@ -576,7 +588,11 @@ static void edit_select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, v
                 .disappear = value_edit_window_disappear, .unload = value_edit_window_unload,
             });
         }
+        #if defined(PBL_PLATFORM_APLITE)
+        window_stack_push(s_value_edit_window, false);
+        #else
         if (!window_stack_contains_window(s_value_edit_window)) window_stack_push(s_value_edit_window, true);
+        #endif
     }
 }
 
@@ -628,10 +644,6 @@ static void edit_window_load(Window *window) {
 
 static void edit_window_unload(Window *window) {
     if (s_edit_menu_layer) { menu_layer_destroy(s_edit_menu_layer); s_edit_menu_layer = NULL; }
-    if (window == s_edit_window) {
-        s_edit_window = NULL;
-        app_timer_register(50, destroy_window_cb, window);
-    }
 }
 
 static uint16_t main_get_num_sections_callback(MenuLayer *menu_layer, void *data) { return 4; }
@@ -643,7 +655,10 @@ static uint16_t main_get_num_rows_callback(MenuLayer *menu_layer, uint16_t secti
     return 0;
 }
 static int16_t main_get_cell_height_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *data) { return ui_get_dynamic_cell_height(); }
-static int16_t main_get_header_height_callback(MenuLayer *menu_layer, uint16_t section_index, void *data) { return section_index == 3 ? 0 : UI_HEADER_HEIGHT; }
+static int16_t main_get_header_height_callback(MenuLayer *menu_layer, uint16_t section_index, void *data) {
+    if (section_index == 1 && storage_get_num_drinks() == 0) return 0;
+    return section_index == 3 ? 0 : UI_HEADER_HEIGHT;
+}
 
 static void main_draw_header_callback(GContext* ctx, const Layer *cell_layer, uint16_t section_index, void *data) {
     if (section_index == 0) menu_cell_basic_header_draw(ctx, cell_layer, "Actions");
@@ -659,14 +674,17 @@ static void main_draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuI
         char title[32]; char subtitle[48]; AppSettings *settings = storage_get_settings();
 
         struct tm *tick_time = localtime((time_t*)&d->timestamp);
-        if (tick_time) strftime(title, sizeof(title), "%H:%M", tick_time);
+        if (tick_time) {
+            if (clock_is_24h_style()) strftime(title, sizeof(title), "%H:%M", tick_time);
+            else strftime(title, sizeof(title), "%I:%M%p", tick_time);
+        }
 
         int abv_tenths = (int)(d->abv * 1000.0f + 0.5f);
-        int vol_ml = (int)(d->volume_ml + 0.5f);
-        int oz_tenths = (vol_ml * 10000 + 14786) / 29573;
+        float oz = (d->volume_ml / 29.5735f) + 0.05f;
+        int oz_w = (int)oz; int oz_d = (int)(oz * 10.0f) % 10;
 
-        if (settings->use_metric_volume) snprintf(subtitle, sizeof(subtitle), "%dml (%d.%doz) | %d.%d%%", vol_ml, oz_tenths / 10, oz_tenths % 10, abv_tenths / 10, abv_tenths % 10);
-        else snprintf(subtitle, sizeof(subtitle), "%d.%doz (%dml) | %d.%d%%", oz_tenths / 10, oz_tenths % 10, vol_ml, abv_tenths / 10, abv_tenths % 10);
+        if (settings->use_metric_volume) snprintf(subtitle, sizeof(subtitle), "%dml (%d.%doz) | %d.%d%%", (int)d->volume_ml, oz_w, oz_d, abv_tenths / 10, abv_tenths % 10);
+        else snprintf(subtitle, sizeof(subtitle), "%d.%doz (%dml) | %d.%d%%", oz_w, oz_d, (int)d->volume_ml, abv_tenths / 10, abv_tenths % 10);
 
         ui_draw_dynamic_menu_cell(ctx, cell_layer, title, subtitle, false, 0);
     } else if (cell_index->section == 2) {
@@ -678,8 +696,10 @@ static void main_draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuI
 }
 
 static void main_select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *data) {
+    #if !defined(PBL_PLATFORM_APLITE)
     if (s_click_locked) return;
     s_click_locked = true; app_timer_register(300, unlock_click, NULL);
+    #endif
 
     app_reset_idle_timer();
     if (cell_index->section == 0) {
@@ -694,20 +714,24 @@ static void main_select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, v
                 .disappear = edit_window_disappear, .unload = edit_window_unload,
             });
         }
+        #if defined(PBL_PLATFORM_APLITE)
+        window_stack_push(s_edit_window, false);
+        #else
         if (!window_stack_contains_window(s_edit_window)) window_stack_push(s_edit_window, true);
+        #endif
     } else if (cell_index->section == 2) {
         settings_menu_push();
     } else if (cell_index->section == 3) {
         AppSettings *settings = storage_get_settings();
 
         #if defined(PBL_PLATFORM_APLITE)
-        GColor time_color = theme_text();
+        if (settings->target_bac >= 0.0f) big_time_window_push(s_target_time, "Target BAC Time");
+        else big_time_window_push(s_zero_time, "Sober By Time");
         #else
         GColor time_color = get_bac_color(s_current_bac);
-        #endif
-
         if (settings->target_bac >= 0.0f) big_time_window_push(s_target_time, "Target BAC Time", time_color);
         else big_time_window_push(s_zero_time, "Sober By Time", time_color);
+        #endif
     }
 }
 
@@ -726,7 +750,20 @@ static void main_window_load(Window *window) {
     Layer *window_layer = window_get_root_layer(window); GRect bounds = layer_get_bounds(window_layer);
     window_set_background_color(window, theme_bg());
 
-    #if defined(PBL_ROUND)
+    #if defined(PBL_PLATFORM_APLITE)
+    int menu_y = 65;
+    s_dashboard_layer = layer_create(GRect(0, 0, bounds.size.w, menu_y));
+    s_menu_layer = menu_layer_create(GRect(0, menu_y, bounds.size.w, bounds.size.h - menu_y));
+
+    if (!s_dashboard_layer || !s_menu_layer) {
+        if (s_dashboard_layer) { layer_destroy(s_dashboard_layer); s_dashboard_layer = NULL; }
+        if (s_menu_layer) { menu_layer_destroy(s_menu_layer); s_menu_layer = NULL; }
+        return;
+    }
+    layer_set_update_proc(s_dashboard_layer, dashboard_update_proc);
+    layer_add_child(window_layer, s_dashboard_layer);
+
+    #elif defined(PBL_ROUND)
     s_bac_title_layer = text_layer_create(GRect(0, 2, bounds.size.w, 16));
     if (s_bac_title_layer) {
         text_layer_set_font(s_bac_title_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD));
@@ -750,12 +787,10 @@ static void main_window_load(Window *window) {
     int bac_h = 35; int title_y = 12; int title_w = 45; int sober_y = 40; int menu_y = 65;
     const char *bac_font = FONT_KEY_BITHAM_30_BLACK; const char *title_font = FONT_KEY_GOTHIC_14_BOLD;
 
-    #if !defined(PBL_PLATFORM_APLITE)
     if (PBL_PLATFORM_TYPE_CURRENT == PlatformTypeEmery) {
         bac_h = 55; title_y = 18; title_w = 65; sober_y = 60; menu_y = 90;
         bac_font = FONT_KEY_BITHAM_42_BOLD; title_font = FONT_KEY_GOTHIC_24_BOLD;
     }
-    #endif
 
     s_bac_layer = text_layer_create(GRect(0, 5, bounds.size.w, bac_h));
     if (s_bac_layer) {
@@ -776,6 +811,7 @@ static void main_window_load(Window *window) {
     GRect menu_bounds = GRect(0, menu_y, bounds.size.w, bounds.size.h - menu_y);
     #endif
 
+    #if !defined(PBL_PLATFORM_APLITE)
     if (s_sober_layer) {
         text_layer_set_font(s_sober_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24));
         text_layer_set_text_alignment(s_sober_layer, GTextAlignmentCenter);
@@ -788,6 +824,7 @@ static void main_window_load(Window *window) {
         if (s_sober_layer) text_layer_set_text(s_sober_layer, "Restart App");
         return;
     }
+    #endif
 
     menu_layer_set_callbacks(s_menu_layer, NULL, s_main_menu_cbs);
     menu_layer_set_click_config_onto_window(s_menu_layer, window);
@@ -797,7 +834,9 @@ static void main_window_load(Window *window) {
 }
 
 static void main_window_appear(Window *window) {
+    #if !defined(PBL_PLATFORM_APLITE)
     s_click_locked = false;
+    #endif
     app_reset_idle_timer();
     cleanup_old_drinks(); update_bac_calculations(); update_dashboard_text();
     if (s_menu_layer) { apply_theme_to_menu(window, s_menu_layer); menu_layer_reload_data(s_menu_layer); touch_menu_subscribe(window, s_menu_layer, s_main_menu_cbs, NULL); }
@@ -806,15 +845,24 @@ static void main_window_appear(Window *window) {
 static void main_window_disappear(Window *window) { touch_menu_unsubscribe(); }
 
 static void main_window_unload(Window *window) {
+    #if defined(PBL_PLATFORM_APLITE)
+    if (s_dashboard_layer) { layer_destroy(s_dashboard_layer); s_dashboard_layer = NULL; }
+    #else
     if (s_bac_title_layer) { text_layer_destroy(s_bac_title_layer); s_bac_title_layer = NULL; }
     if (s_bac_layer) { text_layer_destroy(s_bac_layer); s_bac_layer = NULL; }
     if (s_sober_layer) { text_layer_destroy(s_sober_layer); s_sober_layer = NULL; }
+    #endif
     if (s_menu_layer) { menu_layer_destroy(s_menu_layer); s_menu_layer = NULL; }
 }
 
 static void init(void) {
+    storage_load_settings();
+    #if defined(PBL_PLATFORM_APLITE)
+    storage_load_drinks();
+    #else
     int num_drinks = 0;
-    storage_load_settings(); storage_load_drinks(NULL, &num_drinks);
+    storage_load_drinks(NULL, &num_drinks);
+    #endif
 
     uint32_t out_size = dict_calc_buffer_size(2, sizeof(uint32_t), sizeof(uint32_t));
     app_message_open(32, out_size);
@@ -828,7 +876,12 @@ static void init(void) {
         .load = main_window_load, .appear = main_window_appear,
         .disappear = main_window_disappear, .unload = main_window_unload,
     });
+
+    #if defined(PBL_PLATFORM_APLITE)
+    window_stack_push(s_main_window, false);
+    #else
     window_stack_push(s_main_window, true);
+    #endif
 }
 
 static void deinit(void) {
@@ -836,7 +889,9 @@ static void deinit(void) {
     if (s_main_window) window_destroy(s_main_window);
     if (s_edit_window) window_destroy(s_edit_window);
     if (s_value_edit_window) window_destroy(s_value_edit_window);
+    #if !defined(PBL_PLATFORM_APLITE)
     storage_deinit();
+    #endif
 }
 
 int main(void) { init(); app_event_loop(); deinit(); }

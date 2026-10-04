@@ -1,42 +1,85 @@
+// ============================================================================
+// File: src/windows/abv_window.c
+// ============================================================================
 #include <pebble.h>
 #include "abv_window.h"
 #include "time_offset_menu.h"
 #include "../core/storage.h"
 
 extern void app_reset_idle_timer(void);
-extern void wizard_advance(void);
 
+#if !defined(PBL_PLATFORM_APLITE)
+extern void wizard_advance(void);
 extern int g_wizard_next_step;
 extern float g_wizard_vol;
 extern float g_wizard_orig_vol;
 extern float g_wizard_abv;
 extern DrinkShape g_wizard_shape;
+#endif
 
 static Window *s_window;
+
+#if defined(PBL_PLATFORM_APLITE)
+static Layer *s_canvas_layer;
+#else
 static TextLayer *s_title_layer;
 static TextLayer *s_abv_layer;
+static bool s_click_locked = false;
+static void unlock_click(void *data) { s_click_locked = false; }
+static void oom_pop_callback(void *data) { window_stack_pop(false); }
+#endif
+
+void abv_window_remove_from_stack(void) {
+    if (s_window && window_stack_contains_window(s_window)) {
+        window_stack_remove(s_window, false);
+    }
+}
 
 static float s_current_abv = 5.0f;
 static float s_current_volume_ml = 0.0f;
 static float s_original_volume_ml = 0.0f;
 static DrinkShape s_shape;
 
-static bool s_click_locked = false;
-static void unlock_click(void *data) { s_click_locked = false; }
-
 #if defined(PBL_TOUCH)
 static uint16_t s_touch_repeat_count = 0;
 #endif
 
+#if defined(PBL_PLATFORM_APLITE)
+static void canvas_update_proc(Layer *layer, GContext *ctx) {
+    GRect bounds = layer_get_bounds(layer);
+    graphics_context_set_text_color(ctx, theme_text());
+
+    char buffer[16];
+    int abv_tenths = (int)(s_current_abv * 10.0f + 0.5f);
+    int abv_whole = abv_tenths / 10;
+    int abv_decimal = abv_tenths % 10;
+    snprintf(buffer, sizeof(buffer), "%d.%d%%", abv_whole, abv_decimal);
+
+    int center_y = bounds.size.h / 2;
+
+    graphics_draw_text(ctx, "Adjust ABV", fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD),
+                       GRect(0, center_y - 40, bounds.size.w, 30),
+                       GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+
+    graphics_draw_text(ctx, buffer, fonts_get_system_font(FONT_KEY_BITHAM_42_BOLD),
+                       GRect(0, center_y - 10, bounds.size.w, 60),
+                       GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+}
+#else
 static void update_abv_text(void) {
     static char s_buffer[16];
     int abv_tenths = (int)(s_current_abv * 10.0f + 0.5f);
-    snprintf(s_buffer, sizeof(s_buffer), "%d.%d%%", abv_tenths / 10, abv_tenths % 10);
+    int abv_whole = abv_tenths / 10;
+    int abv_decimal = abv_tenths % 10;
+
+    snprintf(s_buffer, sizeof(s_buffer), "%d.%d%%", abv_whole, abv_decimal);
     text_layer_set_text(s_abv_layer, s_buffer);
 }
+#endif
 
 static void up_click_handler(ClickRecognizerRef recognizer, void *context) {
     app_reset_idle_timer();
+
     uint16_t repeats = 0;
     if (recognizer) repeats = click_number_of_clicks_counted(recognizer);
     #if defined(PBL_TOUCH)
@@ -46,11 +89,17 @@ static void up_click_handler(ClickRecognizerRef recognizer, void *context) {
     float step = (repeats > 11) ? 1.0f : 0.1f;
     s_current_abv += step;
     if (s_current_abv > 75.0f) s_current_abv = 75.0f;
+
+    #if defined(PBL_PLATFORM_APLITE)
+    if (s_canvas_layer) layer_mark_dirty(s_canvas_layer);
+    #else
     update_abv_text();
+    #endif
 }
 
 static void down_click_handler(ClickRecognizerRef recognizer, void *context) {
     app_reset_idle_timer();
+
     uint16_t repeats = 0;
     if (recognizer) repeats = click_number_of_clicks_counted(recognizer);
     #if defined(PBL_TOUCH)
@@ -59,12 +108,19 @@ static void down_click_handler(ClickRecognizerRef recognizer, void *context) {
 
     float step = (repeats > 11) ? 1.0f : 0.1f;
     if (s_current_abv > step) s_current_abv -= step; else s_current_abv = 0.0f;
+
+    #if defined(PBL_PLATFORM_APLITE)
+    if (s_canvas_layer) layer_mark_dirty(s_canvas_layer);
+    #else
     update_abv_text();
+    #endif
 }
 
 static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
+    #if !defined(PBL_PLATFORM_APLITE)
     if (s_click_locked) return;
     s_click_locked = true; app_timer_register(300, unlock_click, NULL);
+    #endif
     app_reset_idle_timer();
 
     if (s_shape == SHAPE_CUSTOM) {
@@ -74,9 +130,13 @@ static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
         storage_save_settings();
     }
 
+    #if defined(PBL_PLATFORM_APLITE)
+    time_offset_menu_push(s_current_volume_ml, s_original_volume_ml, s_current_abv / 100.0f, s_shape);
+    #else
     g_wizard_abv = s_current_abv;
     g_wizard_next_step = 3;
     wizard_advance();
+    #endif
 }
 
 static void click_config_provider(void *context) {
@@ -93,9 +153,10 @@ static int16_t s_current_touch_y = -1;
 
 static void touch_hold_timer_cb(void *data) {
     s_touch_hold_timer = NULL;
-    if (s_current_touch_y < 0) return;
+    if (s_current_touch_y < 0 || !s_window) return;
 
     Layer *window_layer = window_get_root_layer(s_window);
+    if (!window_layer) return;
     GRect bounds = layer_get_bounds(window_layer);
 
     bool triggered = false;
@@ -125,12 +186,16 @@ static void touch_handler(const TouchEvent *event, void *context) {
             if (delta < -15) { s_touch_repeat_count++; up_click_handler(NULL, NULL); s_touch_last_y = event->y; }
             else if (delta > 15) { s_touch_repeat_count++; down_click_handler(NULL, NULL); s_touch_last_y = event->y; }
 
-            Layer *window_layer = window_get_root_layer(s_window);
-            GRect bounds = layer_get_bounds(window_layer);
-            if (!s_touch_hold_timer && (event->y < bounds.size.h / 3 || event->y > (bounds.size.h * 2) / 3)) {
-                s_touch_hold_timer = app_timer_register(150, touch_hold_timer_cb, NULL);
-            } else if (s_touch_hold_timer && event->y >= bounds.size.h / 3 && event->y <= (bounds.size.h * 2) / 3) {
-                app_timer_cancel(s_touch_hold_timer); s_touch_hold_timer = NULL;
+            if (s_window) {
+                Layer *window_layer = window_get_root_layer(s_window);
+                if (window_layer) {
+                    GRect bounds = layer_get_bounds(window_layer);
+                    if (!s_touch_hold_timer && (event->y < bounds.size.h / 3 || event->y > (bounds.size.h * 2) / 3)) {
+                        s_touch_hold_timer = app_timer_register(150, touch_hold_timer_cb, NULL);
+                    } else if (s_touch_hold_timer && event->y >= bounds.size.h / 3 && event->y <= (bounds.size.h * 2) / 3) {
+                        app_timer_cancel(s_touch_hold_timer); s_touch_hold_timer = NULL;
+                    }
+                }
             }
         }
     } else if (event->type == TouchEvent_Liftoff) {
@@ -149,7 +214,9 @@ static void touch_handler(const TouchEvent *event, void *context) {
 #endif
 
 static void window_appear(Window *window) {
+    #if !defined(PBL_PLATFORM_APLITE)
     s_click_locked = false;
+    #endif
     app_reset_idle_timer();
     #if defined(PBL_TOUCH)
     if (touch_service_is_enabled()) touch_service_subscribe(touch_handler, NULL);
@@ -159,15 +226,23 @@ static void window_appear(Window *window) {
 static void window_disappear(Window *window) {
     #if defined(PBL_TOUCH)
     if (touch_service_is_enabled()) touch_service_unsubscribe();
+    if (s_touch_hold_timer) { app_timer_cancel(s_touch_hold_timer); s_touch_hold_timer = NULL; }
     #endif
 }
-
-static void oom_pop_callback(void *data) { window_stack_pop(false); }
 
 static void window_load(Window *window) {
     Layer *window_layer = window_get_root_layer(window); GRect bounds = layer_get_bounds(window_layer);
     window_set_background_color(window, theme_bg());
 
+    #if defined(PBL_PLATFORM_APLITE)
+    s_canvas_layer = layer_create(bounds);
+    if (!s_canvas_layer) {
+        APP_LOG(APP_LOG_LEVEL_ERROR, "OOM: abv canvas");
+        return;
+    }
+    layer_set_update_proc(s_canvas_layer, canvas_update_proc);
+    layer_add_child(window_layer, s_canvas_layer);
+    #else
     s_title_layer = text_layer_create(GRect(0, bounds.size.h / 2 - 40, bounds.size.w, 30));
     s_abv_layer = text_layer_create(GRect(0, bounds.size.h / 2 - 10, bounds.size.w, 60));
 
@@ -190,17 +265,16 @@ static void window_load(Window *window) {
     layer_add_child(window_layer, text_layer_get_layer(s_abv_layer));
 
     update_abv_text();
+    #endif
 }
 
-static void destroy_window_cb(void *data) { window_destroy((Window*)data); }
-
 static void window_unload(Window *window) {
+    #if defined(PBL_PLATFORM_APLITE)
+    if (s_canvas_layer) { layer_destroy(s_canvas_layer); s_canvas_layer = NULL; }
+    #else
     if (s_title_layer) { text_layer_destroy(s_title_layer); s_title_layer = NULL; }
     if (s_abv_layer) { text_layer_destroy(s_abv_layer); s_abv_layer = NULL; }
-    if (window == s_window) {
-        s_window = NULL;
-        app_timer_register(50, destroy_window_cb, window);
-    }
+    #endif
 }
 
 void abv_window_push(float volume_ml, float original_volume_ml, float default_abv, DrinkShape shape) {
@@ -217,5 +291,16 @@ void abv_window_push(float volume_ml, float original_volume_ml, float default_ab
             .disappear = window_disappear, .unload = window_unload,
         });
     }
+
+    #if defined(PBL_PLATFORM_APLITE)
+    window_stack_push(s_window, false);
+    #else
     if (!window_stack_contains_window(s_window)) window_stack_push(s_window, true);
+    #endif
+}
+
+void abv_window_destroy_safe(void) {
+    if (s_window && window_stack_contains_window(s_window)) {
+        window_stack_remove(s_window, false);
+    }
 }

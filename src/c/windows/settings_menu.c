@@ -1,3 +1,6 @@
+// ============================================================================
+// File: src/windows/settings_menu.c
+// ============================================================================
 #include <pebble.h>
 #include "settings_menu.h"
 #include "weight_window.h"
@@ -16,14 +19,16 @@ static bool s_clear_confirm = false;
 static MenuIndex s_selected_index = {0, 0};
 static AppTimer *s_marquee_timer = NULL;
 static int s_marquee_offset = 0;
-static bool s_click_locked = false;
 
-static void unlock_click(void *data) { s_click_locked = false; }
 static void marquee_timer_callback(void *data) {
     s_marquee_offset += 3;
     if (s_menu_layer) layer_mark_dirty(menu_layer_get_layer(s_menu_layer));
     s_marquee_timer = app_timer_register(100, marquee_timer_callback, NULL);
 }
+
+static bool s_click_locked = false;
+static void unlock_click(void *data) { s_click_locked = false; }
+static void oom_pop_callback(void *data) { window_stack_pop(false); }
 #endif
 
 typedef enum {
@@ -39,18 +44,51 @@ typedef enum {
 } SettingsRow;
 
 static Window *s_clear_window;
+
+#if defined(PBL_PLATFORM_APLITE)
+static Layer *s_clear_canvas;
+
+static void clear_update_proc(Layer *layer, GContext *ctx) {
+    GRect bounds = layer_get_bounds(layer);
+    graphics_context_set_text_color(ctx, theme_text());
+
+    GFont font_24 = fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD);
+    GFont font_18 = fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD);
+
+    graphics_draw_text(ctx, "Clear all drinks?", font_24,
+                       GRect(10, bounds.size.h / 2 - 40, bounds.size.w - 20, 60),
+                       GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
+
+    graphics_draw_text(ctx, "<- No", font_18,
+                       GRect(5, bounds.size.h / 2 - 12, 50, 30),
+                       GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
+
+    graphics_draw_text(ctx, "Yes ->", font_18,
+                       GRect(bounds.size.w - 55, bounds.size.h / 2 - 12, 50, 30),
+                       GTextOverflowModeWordWrap, GTextAlignmentRight, NULL);
+}
+#else
 static TextLayer *s_clear_prompt_layer;
 static TextLayer *s_clear_yes_layer;
 static TextLayer *s_clear_no_layer;
+#endif
 
 static void clear_yes_click_handler(ClickRecognizerRef recognizer, void *context) {
     storage_clear_drinks();
     window_stack_pop(false);
+    #if defined(PBL_PLATFORM_APLITE)
+    window_stack_pop(false);
+    #else
     window_stack_pop(true);
+    #endif
 }
 
 static void clear_no_click_handler(ClickRecognizerRef recognizer, void *context) {
+    #if defined(PBL_PLATFORM_APLITE)
+    window_stack_pop(false);
+    #else
     window_stack_pop(true);
+    #endif
 }
 
 static void clear_click_config_provider(void *context) {
@@ -58,53 +96,77 @@ static void clear_click_config_provider(void *context) {
     window_single_click_subscribe(BUTTON_ID_BACK, clear_no_click_handler);
 }
 
-static void oom_pop_callback(void *data) { window_stack_pop(false); }
-
 static void clear_window_load(Window *window) {
     Layer *window_layer = window_get_root_layer(window); GRect bounds = layer_get_bounds(window_layer);
     window_set_background_color(window, theme_bg());
 
-    s_clear_prompt_layer = text_layer_create(GRect(10, bounds.size.h / 2 - 40, bounds.size.w - 20, 60));
-    s_clear_no_layer = text_layer_create(GRect(5, bounds.size.h / 2 - 12, 50, 30));
-    s_clear_yes_layer = text_layer_create(GRect(bounds.size.w - 55, bounds.size.h / 2 - 12, 50, 30));
+    #if defined(PBL_PLATFORM_APLITE)
+    s_clear_canvas = layer_create(bounds);
+    if (!s_clear_canvas) return;
+    layer_set_update_proc(s_clear_canvas, clear_update_proc);
+    layer_add_child(window_layer, s_clear_canvas);
+    #else
+    GFont prompt_font = fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD);
+    GFont btn_font = fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD);
+    int p_y = bounds.size.h / 2 - 40;
+    int p_h = 60;
+    int n_y = bounds.size.h / 2 - 12;
+
+    PreferredContentSize size = preferred_content_size();
+    if (size == PreferredContentSizeLarge || size == PreferredContentSizeExtraLarge) {
+        prompt_font = fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD);
+        btn_font = fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD);
+        p_y -= 10;
+        p_h = 70;
+        n_y += 5;
+    } else if (size == PreferredContentSizeSmall) {
+        prompt_font = fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD);
+        btn_font = fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD);
+        p_y += 10;
+        p_h = 40;
+        n_y -= 5;
+    }
+
+    s_clear_prompt_layer = text_layer_create(GRect(5, p_y, bounds.size.w - 10, p_h));
+    s_clear_no_layer = text_layer_create(GRect(5, n_y, 75, 30));
+    s_clear_yes_layer = text_layer_create(GRect(bounds.size.w - 80, n_y, 75, 30));
 
     if (!s_clear_prompt_layer || !s_clear_no_layer || !s_clear_yes_layer) {
         app_timer_register(10, oom_pop_callback, NULL);
         return;
     }
 
-    text_layer_set_font(s_clear_prompt_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD));
+    text_layer_set_font(s_clear_prompt_layer, prompt_font);
     text_layer_set_text_alignment(s_clear_prompt_layer, GTextAlignmentCenter);
     text_layer_set_background_color(s_clear_prompt_layer, GColorClear);
     text_layer_set_text_color(s_clear_prompt_layer, theme_text());
     text_layer_set_text(s_clear_prompt_layer, "Clear all drinks?");
     layer_add_child(window_layer, text_layer_get_layer(s_clear_prompt_layer));
 
-    text_layer_set_font(s_clear_no_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
+    text_layer_set_font(s_clear_no_layer, btn_font);
     text_layer_set_text_alignment(s_clear_no_layer, GTextAlignmentLeft);
     text_layer_set_background_color(s_clear_no_layer, GColorClear);
     text_layer_set_text_color(s_clear_no_layer, theme_text());
     text_layer_set_text(s_clear_no_layer, "<- No");
     layer_add_child(window_layer, text_layer_get_layer(s_clear_no_layer));
 
-    text_layer_set_font(s_clear_yes_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
+    text_layer_set_font(s_clear_yes_layer, btn_font);
     text_layer_set_text_alignment(s_clear_yes_layer, GTextAlignmentRight);
     text_layer_set_background_color(s_clear_yes_layer, GColorClear);
     text_layer_set_text_color(s_clear_yes_layer, theme_text());
     text_layer_set_text(s_clear_yes_layer, "Yes ->");
     layer_add_child(window_layer, text_layer_get_layer(s_clear_yes_layer));
+    #endif
 }
 
-static void destroy_window_cb(void *data) { window_destroy((Window*)data); }
-
 static void clear_window_unload(Window *window) {
+    #if defined(PBL_PLATFORM_APLITE)
+    if (s_clear_canvas) { layer_destroy(s_clear_canvas); s_clear_canvas = NULL; }
+    #else
     if (s_clear_prompt_layer) { text_layer_destroy(s_clear_prompt_layer); s_clear_prompt_layer = NULL; }
     if (s_clear_yes_layer) { text_layer_destroy(s_clear_yes_layer); s_clear_yes_layer = NULL; }
     if (s_clear_no_layer) { text_layer_destroy(s_clear_no_layer); s_clear_no_layer = NULL; }
-    if (window == s_clear_window) {
-        s_clear_window = NULL;
-        app_timer_register(50, destroy_window_cb, window);
-    }
+    #endif
 }
 
 static void push_clear_prompt(void) {
@@ -117,7 +179,12 @@ static void push_clear_prompt(void) {
             .load = clear_window_load, .unload = clear_window_unload,
         });
     }
+
+    #if defined(PBL_PLATFORM_APLITE)
+    window_stack_push(s_clear_window, false);
+    #else
     if (!window_stack_contains_window(s_clear_window)) window_stack_push(s_clear_window, true);
+    #endif
 }
 
 static uint16_t get_num_rows_callback(MenuLayer *menu_layer, uint16_t section_index, void *data) { return NUM_SETTINGS_ROWS; }
@@ -133,8 +200,8 @@ static void draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuIndex 
 
     switch (cell_index->row) {
         case ROW_WEIGHT:
-            if (settings->use_metric_weight) snprintf(subtitle, sizeof(subtitle), "%d kg", (int)settings->weight);
-            else snprintf(subtitle, sizeof(subtitle), "%d lbs", (int)settings->weight);
+            if (settings->use_metric_weight) snprintf(subtitle, sizeof(subtitle), "%d kg", (int)(settings->weight + 0.5f));
+            else snprintf(subtitle, sizeof(subtitle), "%d lbs", (int)(settings->weight + 0.5f));
             ui_draw_dynamic_menu_cell(ctx, cell_layer, "Weight", subtitle, is_selected, marquee); break;
         case ROW_SEX:
             snprintf(subtitle, sizeof(subtitle), settings->gender_constant > 0.6f ? "Male" : "Female");
@@ -154,9 +221,15 @@ static void draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuIndex 
             ui_draw_dynamic_menu_cell(ctx, cell_layer, "Back Gesture", subtitle, is_selected, marquee); break;
             #endif
         case ROW_TARGET_BAC:
+            #if defined(PBL_PLATFORM_APLITE)
+            if (settings->target_bac < 0.0f) snprintf(subtitle, sizeof(subtitle), "Disabled");
+            else { int target_tenths = (int)(settings->target_bac * 100.0f + 0.5f); snprintf(subtitle, sizeof(subtitle), "%d.%02d%%", target_tenths / 100, target_tenths % 100); }
+            ui_draw_dynamic_menu_cell(ctx, cell_layer, "Target BAC", subtitle, is_selected, marquee); break;
+            #else
             if (settings->target_bac < 0.0f) snprintf(subtitle, sizeof(subtitle), "Disable timeline reporting");
             else { int target_tenths = (int)(settings->target_bac * 100.0f + 0.5f); snprintf(subtitle, sizeof(subtitle), "%d.%02d%%", target_tenths / 100, target_tenths % 100); }
             ui_draw_dynamic_menu_cell(ctx, cell_layer, "Target BAC (for timeline)", subtitle, is_selected, marquee); break;
+            #endif
             #if !defined(PBL_PLATFORM_APLITE)
         case ROW_REGION:
             if (settings->region == REGION_UK) snprintf(subtitle, sizeof(subtitle), "United Kingdom");
@@ -176,7 +249,7 @@ static void draw_row_callback(GContext* ctx, const Layer *cell_layer, MenuIndex 
             else snprintf(subtitle, sizeof(subtitle), "Auto (6pm - 6am)");
             ui_draw_dynamic_menu_cell(ctx, cell_layer, "Theme", subtitle, is_selected, marquee); break;
         case ROW_CLEAR_ALL:
-            ui_draw_dynamic_menu_cell(ctx, cell_layer, "Clear All Drinks", s_clear_confirm ? "Click again to confirm!" : "Resets BAC to 0.00", is_selected, marquee); break;
+            ui_draw_dynamic_menu_cell(ctx, cell_layer, "Clear All Drinks", "Resets BAC to 0.00", is_selected, marquee); break;
     }
 }
 
@@ -185,6 +258,7 @@ static void select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *
     if (s_click_locked) return;
     s_click_locked = true; app_timer_register(300, unlock_click, NULL);
     #endif
+
     AppSettings *settings = storage_get_settings(); app_reset_idle_timer();
 
     switch (cell_index->row) {
@@ -220,19 +294,8 @@ static void select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *
         menu_layer_set_normal_colors(menu_layer, theme_bg(), theme_text()); menu_layer_set_highlight_colors(menu_layer, theme_highlight_bg(), theme_highlight_text());
         menu_layer_reload_data(menu_layer); break;
         case ROW_CLEAR_ALL:
-            if (!s_clear_confirm) {
-                s_clear_confirm = true;
-                menu_layer_reload_data(menu_layer);
-            } else {
-                storage_clear_drinks();
-                s_clear_confirm = false;
-                window_stack_pop(true);
-            }
+            push_clear_prompt();
             break;
-    }
-
-    if (cell_index->row != ROW_CLEAR_ALL) {
-        s_clear_confirm = false;
     }
 }
 
@@ -240,7 +303,9 @@ static void selection_changed_callback(struct MenuLayer *menu_layer, MenuIndex n
     #if !defined(PBL_PLATFORM_APLITE)
     s_selected_index = new_index; s_marquee_offset = 0;
     #endif
-    s_clear_confirm = false;
+    if (new_index.row != old_index.row || new_index.section != old_index.section) {
+        s_clear_confirm = false;
+    }
     app_reset_idle_timer();
 }
 
@@ -252,7 +317,8 @@ static MenuLayerCallbacks s_settings_cbs = {
 static void window_appear(Window *window) {
     s_clear_confirm = false;
     #if !defined(PBL_PLATFORM_APLITE)
-    s_click_locked = false; s_marquee_offset = 0;
+    s_click_locked = false;
+    s_marquee_offset = 0;
     s_marquee_timer = app_timer_register(100, marquee_timer_callback, NULL);
     #endif
     if(s_menu_layer) {
@@ -276,7 +342,9 @@ static void window_load(Window *window) {
 
     s_menu_layer = menu_layer_create(bounds);
     if (!s_menu_layer) {
+        #if !defined(PBL_PLATFORM_APLITE)
         app_timer_register(10, oom_pop_callback, NULL);
+        #endif
         return;
     }
 
@@ -298,5 +366,10 @@ void settings_menu_push(void) {
             .disappear = window_disappear, .unload = window_unload,
         });
     }
+
+    #if defined(PBL_PLATFORM_APLITE)
+    window_stack_push(s_window, false);
+    #else
     if (!window_stack_contains_window(s_window)) window_stack_push(s_window, true);
+    #endif
 }

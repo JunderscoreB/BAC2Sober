@@ -13,17 +13,25 @@ typedef struct { float weight; float gender_constant; bool use_metric_volume; bo
 typedef struct { float weight; float gender_constant; bool use_metric_volume; bool use_metric_weight; ThemeMode theme_mode; bool enable_portions; bool right_handed_mode; uint8_t idle_timeout_mins; float target_bac; bool auto_exit; uint8_t region; } AppSettingsV3;
 #endif
 
-// FIXED: Will only be allocated ONCE to prevent heap fragmentation
+#if defined(PBL_PLATFORM_APLITE)
+static Drink s_drinks[MAX_DRINKS];
+#else
 static Drink *s_drinks = NULL;
+#endif
+
 static int s_num_drinks = 0;
 
 static AppSettings s_settings = {
     .weight = 80.0f, .gender_constant = 0.68f, .use_metric_volume = true, .use_metric_weight = true,
-    .theme_mode = THEME_MODE_LIGHT, .enable_portions = true, .right_handed_mode = false,
-    .idle_timeout_mins = 0, .target_bac = 0.00f, .auto_exit = false, .region = REGION_NA,
+    .theme_mode = THEME_MODE_LIGHT, .enable_portions = true,
+    #if !defined(PBL_PLATFORM_APLITE)
+    .right_handed_mode = false, .region = REGION_NA,
+    #endif
+    .idle_timeout_mins = 0, .target_bac = 0.00f, .auto_exit = false,
     .last_custom_volume_ml = 0.0f, .last_custom_abv = 5.0f
 };
 
+#if !defined(PBL_PLATFORM_APLITE)
 static void sanitize_settings(void) {
     if (s_settings.idle_timeout_mins > 15) s_settings.idle_timeout_mins = 0;
     if (s_settings.region > REGION_AU) s_settings.region = REGION_NA;
@@ -32,6 +40,7 @@ static void sanitize_settings(void) {
     if (!(s_settings.gender_constant >= 0.5f && s_settings.gender_constant <= 1.0f)) s_settings.gender_constant = 0.68f;
     if (s_settings.weight < 1.0f) s_settings.weight = 80.0f;
 }
+#endif
 
 void storage_load_settings(void) {
     if (!persist_exists(SETTINGS_PERSIST_KEY)) return;
@@ -41,7 +50,9 @@ void storage_load_settings(void) {
     #if defined(PBL_PLATFORM_APLITE)
     if ((size_t)bytes_read == sizeof(AppSettings)) {
         persist_read_data(SETTINGS_PERSIST_KEY, &s_settings, sizeof(AppSettings));
-        sanitize_settings();
+        if (s_settings.idle_timeout_mins > 15) s_settings.idle_timeout_mins = 0;
+        if (s_settings.target_bac < -1.0f || s_settings.target_bac > 0.40f) s_settings.target_bac = 0.00f;
+        if (s_settings.weight < 20.0f || s_settings.weight > 600.0f) s_settings.weight = 80.0f;
     }
     #else
     if ((size_t)bytes_read == sizeof(AppSettings)) {
@@ -95,8 +106,39 @@ GColor theme_text(void) { return is_dark_theme_active() ? GColorWhite : GColorBl
 GColor theme_highlight_bg(void) { return PBL_IF_COLOR_ELSE(GColorElectricUltramarine, theme_text()); }
 GColor theme_highlight_text(void) { return PBL_IF_COLOR_ELSE(GColorWhite, theme_bg()); }
 
+#if defined(PBL_PLATFORM_APLITE)
+void storage_load_drinks(void) {
+    if (persist_exists(NUM_DRINKS_PERSIST_KEY)) {
+        int num_drinks = persist_read_int(NUM_DRINKS_PERSIST_KEY);
+        if (num_drinks > 0 && num_drinks <= MAX_DRINKS && persist_exists(DRINKS_PERSIST_KEY)) {
+            int bytes_read = persist_get_size(DRINKS_PERSIST_KEY);
+
+            if (bytes_read > 0 && (size_t)bytes_read == sizeof(Drink) * num_drinks) {
+                persist_read_data(DRINKS_PERSIST_KEY, s_drinks, bytes_read);
+                s_num_drinks = num_drinks;
+            } else {
+                storage_clear_drinks();
+                return;
+            }
+
+            bool is_corrupted = false;
+            for(int i = 0; i < s_num_drinks; i++) {
+                if (s_drinks[i].abv < 0.0f || s_drinks[i].abv > 1.0f || s_drinks[i].volume_ml < 0.0f) {
+                    is_corrupted = true;
+                    break;
+                }
+            }
+
+            if (is_corrupted) storage_clear_drinks();
+        } else {
+            s_num_drinks = 0;
+        }
+    } else {
+        s_num_drinks = 0;
+    }
+}
+#else
 void storage_load_drinks(Drink* drinks, int* num_drinks) {
-    // FIX: Allocate the max block upfront and NEVER free it during the session.
     if (!s_drinks) {
         s_drinks = malloc(sizeof(Drink) * MAX_DRINKS);
     }
@@ -109,33 +151,13 @@ void storage_load_drinks(Drink* drinks, int* num_drinks) {
             int bytes_read = persist_get_size(DRINKS_PERSIST_KEY);
             int actual_persisted_count = 0;
 
-            #if defined(PBL_PLATFORM_APLITE)
-            if (bytes_read % sizeof(Drink) == 0) actual_persisted_count = bytes_read / sizeof(Drink);
-            else actual_persisted_count = count;
-            #else
             if (bytes_read % sizeof(Drink) == 0) actual_persisted_count = bytes_read / sizeof(Drink);
             else if (bytes_read % sizeof(DrinkV1) == 0) actual_persisted_count = bytes_read / sizeof(DrinkV1);
             else if (bytes_read % sizeof(DrinkV0) == 0) actual_persisted_count = bytes_read / sizeof(DrinkV0);
             else actual_persisted_count = count;
-            #endif
 
             int load_count = actual_persisted_count > MAX_DRINKS ? MAX_DRINKS : actual_persisted_count;
 
-            #if defined(PBL_PLATFORM_APLITE)
-            if (bytes_read > 0 && (size_t)bytes_read == sizeof(Drink) * count) {
-                if (count > MAX_DRINKS) {
-                    Drink *temp = malloc(bytes_read);
-                    if (temp) {
-                        persist_read_data(DRINKS_PERSIST_KEY, temp, bytes_read);
-                        for(int i = 0; i < load_count; i++) s_drinks[i] = temp[i];
-                        free(temp);
-                    }
-                } else {
-                    persist_read_data(DRINKS_PERSIST_KEY, s_drinks, bytes_read);
-                }
-                s_num_drinks = load_count;
-            }
-            #else
             if (bytes_read > 0 && (size_t)bytes_read == sizeof(DrinkV0) * count) {
                 DrinkV0 *old_v0 = malloc(bytes_read);
                 if (old_v0) {
@@ -171,7 +193,6 @@ void storage_load_drinks(Drink* drinks, int* num_drinks) {
                 }
                 s_num_drinks = load_count;
             }
-            #endif
 
             bool is_corrupted = false;
             for(int i = 0; i < s_num_drinks; i++) {
@@ -184,38 +205,93 @@ void storage_load_drinks(Drink* drinks, int* num_drinks) {
             if (is_corrupted) {
                 storage_clear_drinks();
             } else {
+                for (int i = 0; i < s_num_drinks - 1; i++) {
+                    for (int j = 0; j < s_num_drinks - i - 1; j++) {
+                        if (s_drinks[j].timestamp > s_drinks[j + 1].timestamp) {
+                            Drink temp = s_drinks[j];
+                            s_drinks[j] = s_drinks[j + 1];
+                            s_drinks[j + 1] = temp;
+                        }
+                    }
+                }
                 *num_drinks = s_num_drinks;
                 if (drinks != NULL) { for(int i = 0; i < s_num_drinks; i++) drinks[i] = s_drinks[i]; }
             }
         }
     }
 }
+#endif
 
 void storage_save_drinks(Drink* drinks, int num_drinks) {
+    #if defined(PBL_PLATFORM_APLITE)
+    persist_write_int(NUM_DRINKS_PERSIST_KEY, num_drinks);
+    if (num_drinks > 0) {
+        persist_write_data(DRINKS_PERSIST_KEY, drinks, sizeof(Drink) * num_drinks);
+    } else {
+        persist_delete(DRINKS_PERSIST_KEY);
+    }
+    #else
     s_num_drinks = num_drinks;
-
     if (s_num_drinks > 0 && s_drinks) {
-        // FIX: Removed `realloc`. Array stays MAX_DRINKS sized to protect heap health.
         persist_write_int(NUM_DRINKS_PERSIST_KEY, s_num_drinks);
         persist_write_data(DRINKS_PERSIST_KEY, s_drinks, sizeof(Drink) * s_num_drinks);
     } else {
         storage_clear_drinks();
     }
+    #endif
 }
 
-void storage_add_drink(Drink drink) {
+bool storage_add_drink(Drink drink) {
+    #if defined(PBL_PLATFORM_APLITE)
     if (s_num_drinks < MAX_DRINKS) {
-        if (!s_drinks) s_drinks = malloc(sizeof(Drink) * MAX_DRINKS);
-        if (s_drinks) {
-            s_drinks[s_num_drinks++] = drink;
-            storage_save_drinks(s_drinks, s_num_drinks);
+        s_drinks[s_num_drinks++] = drink;
+        storage_save_drinks(s_drinks, s_num_drinks);
+        return true;
+    }
+    return false;
+    #else
+    if (s_num_drinks >= MAX_DRINKS) return false;
+    if (!s_drinks) s_drinks = malloc(sizeof(Drink) * MAX_DRINKS);
+    if (!s_drinks) return false;
+
+    int i = s_num_drinks++;
+    while (i > 0 && s_drinks[i - 1].timestamp > drink.timestamp) {
+        s_drinks[i] = s_drinks[i - 1];
+        i--;
+    }
+    s_drinks[i] = drink;
+    storage_save_drinks(s_drinks, s_num_drinks);
+    return true;
+    #endif
+}
+
+#if defined(PBL_PLATFORM_APLITE)
+void storage_drop_oldest_drink(void) {
+    if (s_num_drinks > 0) {
+        for (int i = 0; i < s_num_drinks - 1; i++) {
+            s_drinks[i] = s_drinks[i + 1];
         }
+        s_num_drinks--;
+        storage_save_drinks(s_drinks, s_num_drinks);
     }
 }
+#else
+void storage_add_drink_overwrite(Drink drink) {
+    if (!s_drinks) s_drinks = malloc(sizeof(Drink) * MAX_DRINKS);
+    if (!s_drinks) return;
+
+    if (s_num_drinks >= MAX_DRINKS) {
+        for (int i = 0; i < s_num_drinks - 1; i++) {
+            s_drinks[i] = s_drinks[i + 1];
+        }
+        s_num_drinks--;
+    }
+    storage_add_drink(drink);
+}
+#endif
 
 void storage_clear_drinks(void) {
     s_num_drinks = 0;
-    // FIX: Do NOT free(s_drinks). Keep it pre-allocated for the entire session.
     persist_write_int(NUM_DRINKS_PERSIST_KEY, 0);
     persist_delete(DRINKS_PERSIST_KEY);
 }
@@ -223,6 +299,8 @@ void storage_clear_drinks(void) {
 Drink* storage_get_drinks(void) { return s_drinks; }
 int storage_get_num_drinks(void) { return s_num_drinks; }
 
+#if !defined(PBL_PLATFORM_APLITE)
 void storage_deinit(void) {
     if (s_drinks) { free(s_drinks); s_drinks = NULL; }
 }
+#endif
